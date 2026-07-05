@@ -1,5 +1,15 @@
 import { useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Button, ScrollView, StyleSheet, Text, View } from 'react-native';
+import {
+  ActivityIndicator,
+  Alert,
+  Button,
+  Modal,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
 import * as DocumentPicker from 'expo-document-picker';
 // expo-file-system's top-level `readAsStringAsync` is a stub that unconditionally throws in
 // this SDK version (confirmed on a real device - see CHANGELOG); the actual implementation now
@@ -17,8 +27,9 @@ import { PdfPageViewer } from './src/components/PdfPageViewer';
 import { ptSizeToImagePx, ptToImagePx } from './src/lib/coordinateMath';
 import { exportPdf } from './src/lib/exportPdf';
 import { getFontBase64 } from './src/lib/fontAsset';
+import { clearGeminiApiKey, getGeminiApiKey, setGeminiApiKey } from './src/lib/apiKeyStore';
 import { detectLegacyFonts } from './src/lib/legacyFontDetector';
-import { detectTextLines } from './src/lib/ocr';
+import { detectTextLines, detectTextLinesWithGemini } from './src/lib/ocr';
 import { findOcrLineAt } from './src/lib/ocrHitTest';
 import { getPageCount, renderPage, sampleAverageColor } from './src/lib/pdfToImages';
 import {
@@ -153,6 +164,11 @@ export default function App() {
   // Pages OCR has already been kicked off for, so navigating back and forth doesn't re-run
   // detection. A ref (not state): this is bookkeeping for the trigger, never rendered.
   const ocrAttemptedPagesRef = useRef(new Set<number>());
+  // "Enhance with AI" (opt-in Gemini cloud OCR): which page a cloud pass is currently running
+  // for (null = none), and whether the one-time API key prompt is showing.
+  const [enhancingPage, setEnhancingPage] = useState<number | null>(null);
+  const [apiKeyPromptVisible, setApiKeyPromptVisible] = useState(false);
+  const [apiKeyDraft, setApiKeyDraft] = useState('');
 
   const document = useEditStore((s) => s.document);
   const loadDocument = useEditStore((s) => s.loadDocument);
@@ -268,6 +284,56 @@ export default function App() {
     setCurrentPageIndex(index);
     setFocusedEditId(null);
     ensureOcrForPage(document, index);
+  };
+
+  /**
+   * Runs the opt-in Gemini cloud OCR pass over the current page and replaces its detected
+   * lines with the (usually more accurate) cloud result. This is the only action in the app
+   * that sends document content off-device, which is why it only ever runs from an explicit
+   * button press - never automatically - and why the API key prompt below spells that out.
+   */
+  const runEnhanceWithAi = async (apiKey: string) => {
+    if (!document || !page || editingBlocked || enhancingPage !== null) return;
+    const pageIndex = currentPageIndex;
+    const sourceUri = document.sourceUri;
+    setEnhancingPage(pageIndex);
+    try {
+      const lines = await detectTextLinesWithGemini(page, apiKey);
+      if (useEditStore.getState().document?.sourceUri !== sourceUri) return;
+      setOcrLines(pageIndex, lines);
+      setOcrStatusByPage((s) => ({ ...s, [pageIndex]: 'done' }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      // A rejected key is the one failure the user can only fix by re-entering it, so clear
+      // the stored key and let the next button press re-prompt instead of failing forever.
+      if (/api key/i.test(message)) {
+        await clearGeminiApiKey().catch(() => {});
+      }
+      Alert.alert('Enhance with AI failed', message);
+    } finally {
+      setEnhancingPage(null);
+    }
+  };
+
+  const handleEnhancePressed = async () => {
+    const storedKey = await getGeminiApiKey().catch(() => null);
+    if (storedKey) {
+      await runEnhanceWithAi(storedKey);
+    } else {
+      setApiKeyDraft('');
+      setApiKeyPromptVisible(true);
+    }
+  };
+
+  const handleApiKeySubmitted = async () => {
+    const key = apiKeyDraft.trim();
+    if (key === '') return;
+    setApiKeyPromptVisible(false);
+    await setGeminiApiKey(key).catch((error) => {
+      // Key storage failing shouldn't block this one run - it just means re-entry next time.
+      console.warn('Failed to persist Gemini API key', error);
+    });
+    await runEnhanceWithAi(key);
   };
 
   /**
@@ -501,6 +567,19 @@ export default function App() {
                 disabled={editingBlocked}
               />
             </View>
+            {!editingBlocked && ocrStatusByPage[currentPageIndex] !== 'running' && (
+              <View style={styles.modeRow}>
+                <Button
+                  title={
+                    enhancingPage === currentPageIndex
+                      ? 'Enhancing with AI…'
+                      : 'Enhance with AI (sends this page to Google)'
+                  }
+                  onPress={handleEnhancePressed}
+                  disabled={enhancingPage !== null}
+                />
+              </View>
+            )}
             <Text style={styles.hint}>
               {editingBlocked
                 ? 'Editing is disabled on this page - see warning above.'
@@ -564,6 +643,41 @@ export default function App() {
           </View>
         )}
       </ScrollView>
+
+      <Modal
+        visible={apiKeyPromptVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setApiKeyPromptVisible(false)}
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>Gemini API key needed</Text>
+            <Text style={styles.modalBody}>
+              Enhance with AI sends this page&apos;s image to Google&apos;s Gemini API for
+              higher-accuracy text detection. It needs your own free API key (no credit card) -
+              create one at aistudio.google.com, then paste it here. The key is stored only on this
+              device, in encrypted storage.
+            </Text>
+            <TextInput
+              value={apiKeyDraft}
+              onChangeText={setApiKeyDraft}
+              placeholder="Paste API key"
+              autoCapitalize="none"
+              autoCorrect={false}
+              style={styles.modalInput}
+            />
+            <View style={styles.modalButtons}>
+              <Button title="Cancel" onPress={() => setApiKeyPromptVisible(false)} />
+              <Button
+                title="Save & run"
+                onPress={handleApiKeySubmitted}
+                disabled={apiKeyDraft.trim() === ''}
+              />
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -609,5 +723,39 @@ const styles = StyleSheet.create({
   },
   error: {
     color: '#b00020',
+  },
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    justifyContent: 'center',
+    padding: 24,
+  },
+  modalCard: {
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    padding: 20,
+    gap: 12,
+  },
+  modalTitle: {
+    fontSize: 17,
+    fontWeight: '600',
+  },
+  modalBody: {
+    fontSize: 13,
+    color: '#444',
+    lineHeight: 19,
+  },
+  modalInput: {
+    borderWidth: 1,
+    borderColor: '#ccc',
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    fontSize: 14,
+  },
+  modalButtons: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: 12,
   },
 });
