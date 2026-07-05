@@ -71,3 +71,65 @@ export function ptToImagePx(
   const scale = imagePxWidth / pageWidthPt;
   return { x: xPt * scale, y: yPt * scale };
 }
+
+/**
+ * Converts a drawn selection's size (dp) to PDF points - `MaskOverlay.tsx`'s drag-to-select
+ * gesture reports a rectangle's width/height in dp, which must be stored in points like every
+ * other `Edit` field (spec Section 7). A size has no origin to offset against, unlike a
+ * position, but the scale factor is identical to `dpToPt`'s - kept as a separate, clearly-named
+ * function rather than reusing `dpToPt` at call sites, since AGENTS.md flags unit confusion
+ * (here, specifically position-vs-size confusion) as this codebase's most likely bug class.
+ *
+ * @param wDp Width, in dp.
+ * @param hDp Height, in dp.
+ * @param viewWidthDp Width of the on-screen page view, in dp.
+ * @param pageWidthPt Width of the source PDF page, in points.
+ */
+export function dpSizeToPt(
+  wDp: number,
+  hDp: number,
+  viewWidthDp: number,
+  pageWidthPt: number,
+): { wPt: number; hPt: number } {
+  const { xPt: wPt, yPt: hPt } = dpToPt(wDp, hDp, viewWidthDp, pageWidthPt);
+  return { wPt, hPt };
+}
+
+/**
+ * Converts a stored `MaskEdit`'s size (PDF points) back to dp, to render the mask rectangle
+ * on the live on-screen overlay (`MaskOverlay.tsx`).
+ *
+ * @param wPt Width, in PDF points.
+ * @param hPt Height, in PDF points.
+ * @param viewWidthDp Width of the on-screen page view, in dp.
+ * @param pageWidthPt Width of the source PDF page, in points.
+ */
+export function ptSizeToDp(
+  wPt: number,
+  hPt: number,
+  viewWidthDp: number,
+  pageWidthPt: number,
+): { wDp: number; hDp: number } {
+  const { xDp: wDp, yDp: hDp } = ptToDp(wPt, hPt, viewWidthDp, pageWidthPt);
+  return { wDp, hDp };
+}
+
+/**
+ * Converts a stored `MaskEdit`'s size (PDF points) to background-image pixels, so
+ * `App.tsx` can ask the native module to sample the average color around the masked
+ * region in the same pixel space the region will actually be painted in at export time.
+ *
+ * @param wPt Width, in PDF points.
+ * @param hPt Height, in PDF points.
+ * @param imagePxWidth Width of the rendered background image, in px.
+ * @param pageWidthPt Width of the source PDF page, in points.
+ */
+export function ptSizeToImagePx(
+  wPt: number,
+  hPt: number,
+  imagePxWidth: number,
+  pageWidthPt: number,
+): { wPx: number; hPx: number } {
+  const { x: wPx, y: hPx } = ptToImagePx(wPt, hPt, imagePxWidth, pageWidthPt);
+  return { wPx, hPx };
+}

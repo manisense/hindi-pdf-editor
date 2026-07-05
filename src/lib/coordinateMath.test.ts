@@ -1,4 +1,11 @@
-import { dpToPt, ptToDp, ptToImagePx } from './coordinateMath';
+import {
+  dpSizeToPt,
+  dpToPt,
+  ptSizeToDp,
+  ptSizeToImagePx,
+  ptToDp,
+  ptToImagePx,
+} from './coordinateMath';
 
 describe('dpToPt', () => {
   it('is identity when the view is displayed at 1:1 with the page', () => {
@@ -64,5 +71,39 @@ describe('ptToImagePx', () => {
 
   it('maps the origin to the origin', () => {
     expect(ptToImagePx(0, 0, 1190, 595)).toEqual({ x: 0, y: 0 });
+  });
+});
+
+describe('dpSizeToPt', () => {
+  it('matches dpToPt applied to the same numbers (a size is a zero-offset scale, same as a position)', () => {
+    expect(dpSizeToPt(200, 400, 1190, 595)).toEqual({ wPt: 100, hPt: 200 });
+  });
+
+  it('maps a zero size to a zero size', () => {
+    expect(dpSizeToPt(0, 0, 400, 595)).toEqual({ wPt: 0, hPt: 0 });
+  });
+});
+
+describe('ptSizeToDp', () => {
+  it('is the exact inverse of dpSizeToPt for the same viewWidthDp/pageWidthPt pair', () => {
+    const viewWidthDp = 360;
+    const pageWidthPt = 595;
+    const original = { wDp: 42.5, hDp: 18.25 };
+    const { wPt, hPt } = dpSizeToPt(original.wDp, original.hDp, viewWidthDp, pageWidthPt);
+    const roundTripped = ptSizeToDp(wPt, hPt, viewWidthDp, pageWidthPt);
+    expect(roundTripped.wDp).toBeCloseTo(original.wDp, 10);
+    expect(roundTripped.hDp).toBeCloseTo(original.hDp, 10);
+  });
+});
+
+describe('ptSizeToImagePx', () => {
+  it('scales both axes by the same width-derived ratio, matching ptToImagePx', () => {
+    const pageWidthPt = 595;
+    const imagePxWidth = 1785; // 3x scale
+    expect(ptSizeToImagePx(10, 20, imagePxWidth, pageWidthPt)).toEqual({ wPx: 30, hPx: 60 });
+  });
+
+  it('maps a zero size to a zero size', () => {
+    expect(ptSizeToImagePx(0, 0, 1190, 595)).toEqual({ wPx: 0, hPx: 0 });
   });
 });
