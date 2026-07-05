@@ -1,25 +1,64 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { ActivityIndicator, Button, ScrollView, StyleSheet, Text, View } from 'react-native';
 import * as DocumentPicker from 'expo-document-picker';
+// expo-file-system's top-level `readAsStringAsync` is a stub that unconditionally throws in
+// this SDK version (confirmed on a real device - see CHANGELOG); the actual implementation now
+// lives under the `/legacy` subpath, same as `exportPdf.ts`'s own use of this API.
+import * as FileSystem from 'expo-file-system/legacy';
 import { useFonts } from 'expo-font';
 import * as Sharing from 'expo-sharing';
 import { StatusBar } from 'expo-status-bar';
 
 import { EditableTextOverlay } from './src/components/EditableTextOverlay';
+import { LegacyFontWarning } from './src/components/LegacyFontWarning';
 import { MaskOverlay, type DrawnMaskRect } from './src/components/MaskOverlay';
 import { PdfPageViewer } from './src/components/PdfPageViewer';
 import { ptSizeToImagePx, ptToImagePx } from './src/lib/coordinateMath';
 import { exportPdf } from './src/lib/exportPdf';
 import { getFontBase64 } from './src/lib/fontAsset';
+import { detectLegacyFonts } from './src/lib/legacyFontDetector';
 import { getPageCount, renderPage, sampleAverageColor } from './src/lib/pdfToImages';
 import { useEditStore, type MaskEdit, type PageState, type TextEdit } from './src/state/editStore';
 
+/** Sentinel font name used when detection itself fails - see `detectLegacyFontWarnings` below. */
+const UNKNOWN_ENCODING_FONT_NAME = 'unknown (font inspection failed)';
+
 /**
- * Phase 1+2 editor (spec Section 10): pick an existing PDF, browse its pages, tap a page to
- * add Hindi text at that spot, then export every page in one PDF. Replaces the Phase 0 spike
- * entirely, per that screen's own comment and AGENTS.md's phased build process - Phase 0
- * passed on a real device (see spec Section 10/CHANGELOG), so this is the first screen
- * actually built on that verified ground.
+ * Runs `legacyFontDetector.ts` against a freshly-picked document, in the fail-closed shape
+ * AGENTS.md's font/encoding rule requires: a thrown/inconclusive detection result is treated
+ * as "every page's encoding is unknown," not "assume Unicode, proceed" - so on any read or
+ * parse failure this returns one warning per page instead of an empty array.
+ */
+async function detectLegacyFontWarnings(
+  sourceUri: string,
+  pageCount: number,
+): Promise<{ page: number; fontName: string }[]> {
+  try {
+    const base64 = await FileSystem.readAsStringAsync(sourceUri, {
+      encoding: FileSystem.EncodingType.Base64,
+    });
+    return await detectLegacyFonts(base64);
+  } catch (error) {
+    console.warn(
+      'legacyFontDetector failed; treating every page as unknown-encoding (fail closed)',
+      error,
+    );
+    return Array.from({ length: pageCount }, (_, page) => ({
+      page,
+      fontName: UNKNOWN_ENCODING_FONT_NAME,
+    }));
+  }
+}
+
+/**
+ * Phase 1+2+3+4 editor (spec Section 10): pick an existing PDF, browse its pages, tap a page
+ * to add Hindi text at that spot or drag out a mask to replace existing text, then export
+ * every page in one PDF. Pages whose embedded font matches a known pre-Unicode legacy pattern
+ * (or whose font couldn't be inspected at all) are detected on open and have both edit paths
+ * disabled - see `legacyFontDetector.ts`/`LegacyFontWarning.tsx` and spec Section 9. Replaces
+ * the Phase 0 spike entirely, per that screen's own comment and AGENTS.md's phased build
+ * process - Phase 0 passed on a real device (see spec Section 10/CHANGELOG), so this is the
+ * first screen actually built on that verified ground.
  *
  * Deliberately does NOT use `react-native-pdf` for this screen, unlike Section 10's Phase 1
  * checklist wording. Section 6's own module spec defines `PdfPageViewer.tsx` as "background
@@ -101,7 +140,8 @@ export default function App() {
           edits: [],
         });
       }
-      loadDocument({ sourceUri, pageCount, pages, legacyFontWarnings: [] });
+      const legacyFontWarnings = await detectLegacyFontWarnings(sourceUri, pageCount);
+      loadDocument({ sourceUri, pageCount, pages, legacyFontWarnings });
       setCurrentPageIndex(0);
       setFocusedEditId(null);
       setStatus({ state: 'idle' });
@@ -115,6 +155,22 @@ export default function App() {
 
   const page = document?.pages[currentPageIndex];
 
+  // Phase 4 (spec Section 9): distinct legacy font names flagged on the page currently being
+  // viewed. A non-empty array - including the `UNKNOWN_ENCODING_FONT_NAME` sentinel when
+  // detection itself failed - blocks both edit paths on this page; per-page, not document-wide,
+  // since only some pages of a document may actually use a legacy font.
+  const currentPageLegacyFontNames = useMemo(
+    () => [
+      ...new Set(
+        (document?.legacyFontWarnings ?? [])
+          .filter((w) => w.page === currentPageIndex)
+          .map((w) => w.fontName),
+      ),
+    ],
+    [document?.legacyFontWarnings, currentPageIndex],
+  );
+  const editingBlocked = currentPageLegacyFontNames.length > 0;
+
   const goToPage = (index: number) => {
     if (!document || index < 0 || index >= document.pages.length) return;
     setCurrentPageIndex(index);
@@ -126,6 +182,9 @@ export default function App() {
     // PdfPageViewer's Pressable while replaceMode is on, so this shouldn't normally fire, but
     // skipping it here too avoids ever stacking a stray text edit under a freshly drawn mask.
     if (replaceMode) return;
+    // AGENTS.md/spec Section 9: never allow adding text on a page whose font couldn't be
+    // confirmed Unicode-safe - "do not silently allow masking/editing" on such a page.
+    if (editingBlocked) return;
     const edit = addTextEdit(currentPageIndex, {
       xPt,
       yPt,
@@ -147,7 +206,9 @@ export default function App() {
   };
 
   const handleMaskDrawn = async (rect: DrawnMaskRect) => {
-    if (!page) return;
+    // Same fail-closed rule as `handleTap` above - `MaskOverlay`'s `active` prop is also gated
+    // on `!editingBlocked` so this shouldn't normally fire, but this stays as a second guard.
+    if (!page || editingBlocked) return;
     const { x: xPx, y: yPx } = ptToImagePx(rect.xPt, rect.yPt, page.imagePxWidth, page.widthPt);
     const { wPx, hPx } = ptSizeToImagePx(rect.wPt, rect.hPt, page.imagePxWidth, page.widthPt);
 
@@ -257,16 +318,21 @@ export default function App() {
               </View>
             )}
 
+            {editingBlocked && <LegacyFontWarning fontNames={currentPageLegacyFontNames} />}
+
             <View style={styles.modeRow}>
               <Button
                 title={replaceMode ? '✓ Replace text mode' : 'Switch to replace text mode'}
                 onPress={() => setReplaceMode((prev) => !prev)}
+                disabled={editingBlocked}
               />
             </View>
             <Text style={styles.hint}>
-              {replaceMode
-                ? 'Drag a box over existing text to mask and replace it.'
-                : 'Tap anywhere on the page to add Hindi text.'}
+              {editingBlocked
+                ? 'Editing is disabled on this page - see warning above.'
+                : replaceMode
+                  ? 'Drag a box over existing text to mask and replace it.'
+                  : 'Tap anywhere on the page to add Hindi text.'}
             </Text>
             <PdfPageViewer
               // Remounts the viewer (and drops any transient gesture state) on page change,
@@ -280,7 +346,7 @@ export default function App() {
                     masks={page.edits.filter((e): e is MaskEdit => e.type === 'mask')}
                     viewWidthDp={viewWidthDp}
                     pageWidthPt={page.widthPt}
-                    active={replaceMode}
+                    active={replaceMode && !editingBlocked}
                     onMaskDrawn={handleMaskDrawn}
                   />
                   {page.edits
