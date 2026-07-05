@@ -1,69 +1,123 @@
 import { useState } from 'react';
 import { ActivityIndicator, Button, ScrollView, StyleSheet, Text, View } from 'react-native';
-import * as Print from 'expo-print';
+import * as DocumentPicker from 'expo-document-picker';
+import { useFonts } from 'expo-font';
 import * as Sharing from 'expo-sharing';
 import { StatusBar } from 'expo-status-bar';
 
+import { EditableTextOverlay } from './src/components/EditableTextOverlay';
+import { PdfPageViewer } from './src/components/PdfPageViewer';
+import { exportPdf } from './src/lib/exportPdf';
 import { getFontBase64 } from './src/lib/fontAsset';
+import { getPageCount, renderPage } from './src/lib/pdfToImages';
+import { useEditStore, type PageState, type TextEdit } from './src/state/editStore';
 
 /**
- * Phase 0 spike (spec Section 10) - NOT the real app. Proves the core architectural
- * assumption (Section 2-3) before any editor code is written: hardcoded Devanagari HTML,
- * with the font base64-embedded per Section 8, exported via Android's real print pipeline.
+ * Phase 1 MVP editor (spec Section 10): pick an existing PDF, tap the page to add Hindi text
+ * at that spot, then export. Replaces the Phase 0 spike entirely, per that screen's own
+ * comment and AGENTS.md's phased build process - Phase 0 passed on a real device (see spec
+ * Section 10/CHANGELOG), so this is the first screen actually built on that verified ground.
  *
- * Uses the same Devanagari sentences as fixtures/devanagari-fixture.html (conjuncts क्ष/ज्ञ/त्र/द्य,
- * a reph, matras above and below baseline) per AGENTS.md's "one fixed fixture" testing rule,
- * rather than different ad hoc text.
- *
- * This screen gets replaced entirely once Phase 0 passes - see spec Section 10 Phase 1.
+ * Deliberately does NOT use `react-native-pdf` for this screen, unlike Section 10's Phase 1
+ * checklist wording. Section 6's own module spec defines `PdfPageViewer.tsx` as "PNG
+ * background + live overlays," not a live `react-native-pdf` render - the whole Render & Print
+ * architecture depends on the edit canvas being the exact same rasterized image the export
+ * pipeline uses, not a second, independent PDF renderer. `expo-document-picker` covers "open
+ * from device storage"; `react-native-pdf` stays installed for Phase 2's multi-page browsing,
+ * where its scrolling/navigation is the actual point.
  */
-const SPIKE_HTML = (fontBase64: string) => `
-<!DOCTYPE html>
-<html lang="hi">
-<head>
-<meta charset="utf-8" />
-<style>
-  @font-face {
-    font-family: 'NotoSansDevanagari';
-    src: url('data:font/ttf;base64,${fontBase64}') format('truetype');
-    font-weight: 100 900;
-  }
-  body {
-    font-family: 'NotoSansDevanagari', sans-serif;
-    font-size: 28pt;
-    line-height: 1.8;
-    padding: 60pt;
-    color: #111;
-  }
-  .label { font-family: sans-serif; font-size: 11pt; color: #666; margin-bottom: 30pt; }
-  .callout { font-family: sans-serif; font-size: 10pt; color: #888; }
-</style>
-</head>
-<body>
-  <div class="label">Hindi PDF Editor — Phase 0 spike. See hindi-pdf-editor-spec.md Section 10.</div>
-  <div>धर्म और क्षेत्र में गुरुजी ने ज्ञान दिया।</div>
-  <div class="callout">धर्म → reph | क्षेत्र → क्ष conjunct + मात्रा | गुरुजी → matras below baseline | ज्ञान → ज्ञ conjunct</div>
-  <div style="margin-top:40pt">विद्यालय में सूर्य की रोशनी आती है।</div>
-  <div class="callout">विद्यालय → द्य conjunct | सूर्य → reph + मात्रा | रोशनी → मात्रा</div>
-</body>
-</html>
-`;
 
-type SpikeStatus =
+// Default new text size, in PDF points - a reasonable starting size for a body-text edit;
+// no per-edit size UI yet (not a Phase 1 checklist item).
+const DEFAULT_FONT_SIZE_PT = 14;
+// Output px per PDF point when rasterizing the page background - see spec Section 4.1/AGENTS.md's
+// "2-3x, not arbitrarily higher" performance constraint.
+const RASTER_SCALE = 2;
+
+type Status =
   | { state: 'idle' }
-  | { state: 'running' }
-  | { state: 'done'; uri: string }
+  | { state: 'opening' }
+  | { state: 'saving' }
+  | { state: 'saved'; uri: string }
   | { state: 'error'; message: string };
 
 export default function App() {
-  const [status, setStatus] = useState<SpikeStatus>({ state: 'idle' });
+  const [fontsLoaded] = useFonts({
+    NotoSansDevanagari: require('./assets/fonts/NotoSansDevanagari-Variable.ttf'),
+    NotoSerifDevanagari: require('./assets/fonts/NotoSerifDevanagari-Variable.ttf'),
+  });
+  const [status, setStatus] = useState<Status>({ state: 'idle' });
+  const [focusedEditId, setFocusedEditId] = useState<string | null>(null);
 
-  const runSpike = async () => {
-    setStatus({ state: 'running' });
+  const document = useEditStore((s) => s.document);
+  const loadDocument = useEditStore((s) => s.loadDocument);
+  const addTextEdit = useEditStore((s) => s.addTextEdit);
+  const updateTextEdit = useEditStore((s) => s.updateTextEdit);
+  const removeEdit = useEditStore((s) => s.removeEdit);
+
+  const openPdf = async () => {
+    setStatus({ state: 'opening' });
+    try {
+      const result = await DocumentPicker.getDocumentAsync({ type: 'application/pdf' });
+      if (result.canceled) {
+        setStatus({ state: 'idle' });
+        return;
+      }
+      const sourceUri = result.assets[0].uri;
+
+      const pageCount = await getPageCount(sourceUri);
+      const image = await renderPage(sourceUri, 0, RASTER_SCALE);
+      const page: PageState = {
+        pageIndex: 0,
+        // The renderer computed pxWidth/pxHeight as round(widthPt * scale) - dividing back by
+        // the same scale we passed recovers the page's real point-dimensions without a second,
+        // independent read of the source file (see exportPdf.ts's docstring for why this
+        // single-source-of-truth matters).
+        widthPt: image.pxWidth / RASTER_SCALE,
+        heightPt: image.pxHeight / RASTER_SCALE,
+        backgroundImageUri: image.uri,
+        imagePxWidth: image.pxWidth,
+        imagePxHeight: image.pxHeight,
+        edits: [],
+      };
+      loadDocument({ sourceUri, pageCount, pages: [page], legacyFontWarnings: [] });
+      setStatus({ state: 'idle' });
+    } catch (error) {
+      setStatus({
+        state: 'error',
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
+  const handleTap = (xPt: number, yPt: number) => {
+    const edit = addTextEdit(0, {
+      xPt,
+      yPt,
+      fontSizePt: DEFAULT_FONT_SIZE_PT,
+      text: '',
+      color: '#111111',
+      fontFamily: 'NotoSansDevanagari',
+    });
+    setFocusedEditId(edit.id);
+  };
+
+  const handleBlur = (id: string, text: string) => {
+    if (text.trim().length === 0) {
+      removeEdit(0, id);
+    }
+    if (focusedEditId === id) {
+      setFocusedEditId(null);
+    }
+  };
+
+  const saveAndExport = async () => {
+    if (!document) return;
+    setStatus({ state: 'saving' });
     try {
       const fontBase64 = await getFontBase64('NotoSansDevanagari');
-      const { uri } = await Print.printToFileAsync({ html: SPIKE_HTML(fontBase64) });
-      setStatus({ state: 'done', uri });
+      const uri = await exportPdf(document, fontBase64);
+      setStatus({ state: 'saved', uri });
     } catch (error) {
       setStatus({
         state: 'error',
@@ -73,7 +127,7 @@ export default function App() {
   };
 
   const shareResult = async () => {
-    if (status.state !== 'done') return;
+    if (status.state !== 'saved') return;
     if (!(await Sharing.isAvailableAsync())) {
       setStatus({ state: 'error', message: 'Sharing is not available on this device.' });
       return;
@@ -81,30 +135,66 @@ export default function App() {
     await Sharing.shareAsync(status.uri, { UTI: '.pdf', mimeType: 'application/pdf' });
   };
 
+  if (!fontsLoaded) {
+    return (
+      <View style={styles.container}>
+        <StatusBar style="auto" />
+        <ActivityIndicator />
+      </View>
+    );
+  }
+
+  const page = document?.pages[0];
+
   return (
     <View style={styles.container}>
       <StatusBar style="auto" />
       <ScrollView contentContainerStyle={styles.content}>
-        <Text style={styles.title}>Hindi PDF Editor — Phase 0 Spike</Text>
-        <Text style={styles.body}>
-          Renders hardcoded Devanagari (conjuncts, reph, matras) to a base64-embedded @font-face,
-          exports via Print.printToFileAsync, and lets you share the result to open in an external
-          PDF viewer. Record the result per spec Section 10.
-        </Text>
+        <Text style={styles.title}>Hindi PDF Editor</Text>
 
-        <Button title="Run spike" onPress={runSpike} disabled={status.state === 'running'} />
+        <Button
+          title="Open PDF"
+          onPress={openPdf}
+          disabled={status.state === 'opening' || status.state === 'saving'}
+        />
 
-        {status.state === 'running' && <ActivityIndicator style={styles.spacerTop} />}
-
-        {status.state === 'done' && (
-          <View style={styles.spacerTop}>
-            <Text style={styles.success}>Exported: {status.uri}</Text>
-            <Button title="Share / open in a PDF viewer" onPress={shareResult} />
-          </View>
-        )}
-
+        {status.state === 'opening' && <ActivityIndicator style={styles.spacerTop} />}
         {status.state === 'error' && (
           <Text style={[styles.spacerTop, styles.error]}>Failed: {status.message}</Text>
+        )}
+
+        {page && (
+          <View style={styles.spacerTop}>
+            <Text style={styles.hint}>Tap anywhere on the page to add Hindi text.</Text>
+            <PdfPageViewer
+              page={page}
+              onTap={handleTap}
+              renderOverlays={(viewWidthDp) =>
+                page.edits
+                  .filter((e): e is TextEdit => e.type === 'text')
+                  .map((edit) => (
+                    <EditableTextOverlay
+                      key={edit.id}
+                      edit={edit}
+                      viewWidthDp={viewWidthDp}
+                      pageWidthPt={page.widthPt}
+                      autoFocus={edit.id === focusedEditId}
+                      onChangeText={(text) => updateTextEdit(0, edit.id, { text })}
+                      onBlur={() => handleBlur(edit.id, edit.text)}
+                    />
+                  ))
+              }
+            />
+
+            <Button title="Save" onPress={saveAndExport} disabled={status.state === 'saving'} />
+            {status.state === 'saving' && <ActivityIndicator style={styles.spacerTop} />}
+            {status.state === 'saved' && (
+              <View style={styles.spacerTop}>
+                <Text style={styles.success}>Exported: {status.uri}</Text>
+                <Button title="Share / open in a PDF viewer" onPress={shareResult} />
+              </View>
+            )}
+          </View>
         )}
       </ScrollView>
     </View>
@@ -118,7 +208,6 @@ const styles = StyleSheet.create({
   },
   content: {
     flexGrow: 1,
-    justifyContent: 'center',
     padding: 24,
     gap: 16,
   },
@@ -126,9 +215,10 @@ const styles = StyleSheet.create({
     fontSize: 20,
     fontWeight: '600',
   },
-  body: {
-    fontSize: 14,
-    color: '#444',
+  hint: {
+    fontSize: 13,
+    color: '#666',
+    marginBottom: 8,
   },
   spacerTop: {
     marginTop: 16,

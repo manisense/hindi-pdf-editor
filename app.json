@@ -16,6 +16,11 @@
       "predictiveBackGestureEnabled": false,
       "package": "com.manisense.hindipdfeditor"
     },
-    "plugins": ["expo-status-bar", "expo-asset", "expo-sharing"]
+    "plugins": [
+      "expo-status-bar",
+      "expo-asset",
+      "expo-sharing",
+      "expo-font"
+    ]
   }
 }
