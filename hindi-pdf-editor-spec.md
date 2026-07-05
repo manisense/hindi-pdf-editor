@@ -1,18 +1,20 @@
 # Hindi PDF Editor — React Native Build Specification
 
-**Status:** Phases 0, 1, 2, and 3 all passed, verified on a real physical Android device (Section 10). Phase 0 confirmed the Devanagari shaping bet and the in-house `pdf-page-image` rasterization module work at runtime. Phase 1's single-page edit-and-export loop is confirmed end-to-end, including a real on-device bug found and fixed along the way (background image encoding hung the print WebView when combined with Devanagari text). Phase 2's page navigation, per-page edit persistence, and multi-page export are confirmed end-to-end with a dedicated 3-page fixture. Phase 3 closes the scope gap surfaced during Phase 2: a "Switch to replace text mode" toggle lets the user drag out a rectangle over existing burned-in text with `MaskOverlay.tsx`, which samples the surrounding background color via a new native `sampleAverageColor` call and commits a `MaskEdit` immediately followed by a fresh `TextEdit` in the same spot - confirmed end-to-end on the `devanagari-fixture.pdf` fixture, including in the exported PDF, not just the live preview. Phase 4 (legacy font detection) is unblocked and next. Tech stack finalized and version-pinned (Section 4) against package registries and Expo's compatibility matrix as of July 2026. This document is self-contained — it does not assume the reader has any other context. Hand this whole file to your coding agent as its primary brief.
+**Status:** Phases 0 through 4 all passed, verified on a real physical Android device (Section 10). Phase 0 confirmed the Devanagari shaping bet and the in-house `pdf-page-image` rasterization module work at runtime. Phase 1's single-page edit-and-export loop is confirmed end-to-end, including a real on-device bug found and fixed along the way (background image encoding hung the print WebView when combined with Devanagari text). Phase 2's page navigation, per-page edit persistence, and multi-page export are confirmed end-to-end with a dedicated 3-page fixture. Phase 3 closes the scope gap surfaced during Phase 2: a "Switch to replace text mode" toggle lets the user drag out a rectangle over existing burned-in text with `MaskOverlay.tsx`, which samples the surrounding background color via a new native `sampleAverageColor` call and commits a `MaskEdit` immediately followed by a fresh `TextEdit` in the same spot - confirmed end-to-end on the `devanagari-fixture.pdf` fixture, including in the exported PDF, not just the live preview. Phase 4 wires the already-built `legacyFontDetector.ts` into the app: `App.tsx` runs it on every document open (failing closed to "unknown encoding, block everything" if detection itself throws) and a new `LegacyFontWarning.tsx` banner disables both `handleTap` and `MaskOverlay` on any page whose embedded font matches a known pre-Unicode pattern - confirmed on-device with a synthetic KrutiDev-tagged fixture, and confirmed the real Unicode fixture still shows no false-positive warning. All five build phases from Section 10 are now complete; Phase 5 (direct glyph injection) remains explicitly deferred per AGENTS.md and is not started. Tech stack finalized and version-pinned (Section 4) against package registries and Expo's compatibility matrix as of July 2026. This document is self-contained — it does not assume the reader has any other context. Hand this whole file to your coding agent as its primary brief.
 
 ## 1. What we're building
 
 An Android-first React Native app that opens an existing PDF containing Hindi (Devanagari) text and lets the user edit it directly on the page — tap to add new text, or mask and replace existing text — while seeing correctly-shaped Devanagari at every step (proper conjuncts, matras, reph — never broken into disconnected pieces), and exports a real PDF file at the end.
 
 **Hard requirements:**
+
 - Android app, built with React Native.
 - Zero budget: open-source / free-tier libraries only. No paid PDF SDKs (no Nutrient/PSPDFKit, no Apryse, no commercial engines).
 - True WYSIWYG: what the user sees while editing must match what comes out in the final PDF.
 - Devanagari text must **never** render as broken/disconnected characters, at any stage — while typing, in the preview, or in the exported file.
 
 **Non-goals for v1 (do not build these unless explicitly asked):**
+
 - iOS support (architecture is cross-platform-friendly, but don't spend time on iOS-specific polish yet).
 - Reflowing/re-justifying surrounding paragraph text when a word is replaced (out of scope — see Section 2).
 - OCR of scanned/image-only PDFs.
@@ -29,6 +31,7 @@ Devanagari is an abugida: consonants carry an inherent vowel, vowel signs (matra
 **The solution this spec uses:** don't reimplement Devanagari shaping. Android's WebView is Chromium, and Chromium's text renderer is HarfBuzz-backed — the same correct shaping engine already used system-wide on Android. Render the final page as HTML/CSS inside a WebView and export via Android's native print-to-PDF pipeline. 100% of the Devanagari shaping is delegated to production-grade code that already works, instead of hand-rolled or third-party glyph math.
 
 **Do NOT, at any point in this build:**
+
 - Use `android.graphics.pdf.PdfDocument` / `Canvas.drawText()` to draw Devanagari text directly.
 - Use `pdf-lib`'s string-based `drawText()` with a raw Unicode string for Devanagari content.
 - Introduce any custom OpenType/GSUB/GPOS shaping code in Phase 0–4 of this build.
@@ -48,6 +51,7 @@ All of the above either risk rasterizing text into an unselectable image, or req
 This is a real, load-bearing architectural decision, not one option among several — build only this for Phases 0–4. A documented (but deferred) Phase 5 alternative exists for later — see Section 12 — do not build both in parallel.
 
 ### Why not the alternatives (context, not a decision to make again)
+
 - **`android.graphics.pdf.PdfDocument` (native Canvas):** risks silently rasterizing text into an unselectable bitmap; designed for generating new documents, not editing existing ones.
 - **`pdf-lib` + `@pdf-lib/fontkit`:** fontkit does have real Indic-shaping infrastructure, but this path requires hand-writing all PDF coordinate/baseline/Y-flip math yourself, and there's no strong independent evidence of its reliability across arbitrary real-world Devanagari text. More moving parts, more ways to get it subtly wrong.
 - **`pdfnative` (npm):** a real, well-engineered, zero-dependency TypeScript PDF library with genuine Devanagari OpenType shaping. Rejected specifically because its public API is built around **generating new documents** from structured `blocks` (headings, paragraphs, tables) — not placing text at arbitrary coordinates on an **existing** PDF page. Its documented existing-PDF operations are page-tree level (merge/split/extract/inspect), not content-level text placement. Wrong shape for this task, however good the library is at its own job.
@@ -58,22 +62,22 @@ Every package below was checked for current maintenance status and Expo SDK comp
 
 ### 4.1 Core stack
 
-| Purpose | Choice | Version | Why |
-|---|---|---|---|
-| App framework | Expo (custom dev client — `expo prebuild` / `expo-dev-client`), **not** Expo Go, **not** bare RN CLI | SDK 56 (React Native 0.85, React 19.2) | `expo-print` is first-party; `react-native-pdf` and the in-house `pdf-page-image` local module are native code Expo Go can't load. SDK 56 over the newer SDK 57 (released within days of this check) for stability — zero-budget solo build, no bandwidth to firefight bleeding-edge SDK issues. **New Architecture is mandatory on this SDK** — Legacy Architecture was removed from React Native entirely as of 0.82, so every native module below must run under Fabric/TurboModules, either natively or via RN's Legacy Interop Layer. |
-| PDF viewing | `react-native-pdf` + `react-native-blob-util` | 7.0.4 | Displays the source PDF for browsing/page navigation. Actively maintained (Mar 2026). Has documented Fabric/New-Architecture blank-view issues on **iOS**; irrelevant here since v1 is Android-only. Android rendering path is stable. |
-| PDF page → image | in-house `pdf-page-image` local Expo Module (`modules/pdf-page-image`) | 0.1.0 (in-repo, unversioned-for-publish) | `react-native-pdf-page-image` (originally pinned here) was confirmed broken — see Section 4.2 and ADR 0004. Replaced with a ~90-line Kotlin Expo Module wrapping `android.graphics.pdf.PdfRenderer` directly: `getPageCount(uri)` and `renderPage(uri, page, scale)`, same shape `pdfToImages.ts` always expected. No third-party dependency for this layer at all now. |
-| HTML → PDF export | `expo-print` (`Print.printToFileAsync`) | matches SDK 56 | First-party, WebView-based, routes through Android's real print framework. If Phase 0's spike shows meaningfully better selectability or page-break behavior from `react-native-html-to-pdf` instead, swap it in — same architectural slot, don't rebuild around it. |
-| Existing-PDF metadata (page size, font inspection) | `@cantoo/pdf-lib` | 2.7.1 | Maintained, API-compatible fork of `pdf-lib`. The original `pdf-lib` (Hopding) is effectively unmaintained — no response to issues/PRs since 2023–2024 — and the ecosystem (including projects like Stirling-PDF) has migrated to this fork. Read-only use here: `PDFDocument.load()`, `getPage(i).getSize()`, and font-dictionary inspection for Section 9's legacy-font detector. Not used for drawing Devanagari text. |
-| Devanagari font | Noto Sans Devanagari + Noto Serif Devanagari, **variable fonts** (`wght`/`wdth` axes, Thin–Black in one file per family), bundled as app assets | latest from the `google/fonts` repo (OFL license) | Free, open, complete Devanagari OpenType coverage. A variable font was used instead of separate static Regular/Bold files because that's what's actually published for these two families now — one `@font-face` per family, with `font-weight: 100 900`, covers every weight Chromium needs; no separate Bold file to keep in sync. |
-| Edit state | `zustand` | 5.0.14 | Not the hard part of this app — minimal API, no boilerplate. |
-| Open PDF from device storage | `expo-document-picker` | matches SDK 56 | First-party file picker; needed for Phase 1's "open an existing PDF from device storage." |
-| Font/asset base64 loading | `expo-asset` + `expo-file-system` | matches SDK 56 | Backs `fontAsset.ts` — loads and base64-encodes the bundled font once. |
-| Sharing exported PDF | `expo-sharing` | matches SDK 56 | Gets a print-pipeline output PDF (saved to app cache) into an external viewer app — required for Phase 0's "open in at least two different PDF viewers" check. |
-| Unique edit IDs | `expo-crypto` (`randomUUID()`) | matches SDK 56 | First-party; avoids adding a dependency just for UUIDs. |
-| Testing | `jest` + `jest-expo` | matches SDK 56 | Required for `coordinateMath.ts`'s pure functions (Section 11). |
-| Lint/format | `eslint` (`eslint-config-expo`) + `prettier` | latest | Run before considering any checklist item done. |
-| Language | TypeScript, strict mode | — | No `any` without a one-line justifying comment. |
+| Purpose                                            | Choice                                                                                                                                          | Version                                           | Why                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| -------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| App framework                                      | Expo (custom dev client — `expo prebuild` / `expo-dev-client`), **not** Expo Go, **not** bare RN CLI                                            | SDK 56 (React Native 0.85, React 19.2)            | `expo-print` is first-party; `react-native-pdf` and the in-house `pdf-page-image` local module are native code Expo Go can't load. SDK 56 over the newer SDK 57 (released within days of this check) for stability — zero-budget solo build, no bandwidth to firefight bleeding-edge SDK issues. **New Architecture is mandatory on this SDK** — Legacy Architecture was removed from React Native entirely as of 0.82, so every native module below must run under Fabric/TurboModules, either natively or via RN's Legacy Interop Layer. |
+| PDF viewing                                        | `react-native-pdf` + `react-native-blob-util`                                                                                                   | 7.0.4                                             | Displays the source PDF for browsing/page navigation. Actively maintained (Mar 2026). Has documented Fabric/New-Architecture blank-view issues on **iOS**; irrelevant here since v1 is Android-only. Android rendering path is stable.                                                                                                                                                                                                                                                                                                     |
+| PDF page → image                                   | in-house `pdf-page-image` local Expo Module (`modules/pdf-page-image`)                                                                          | 0.1.0 (in-repo, unversioned-for-publish)          | `react-native-pdf-page-image` (originally pinned here) was confirmed broken — see Section 4.2 and ADR 0004. Replaced with a ~90-line Kotlin Expo Module wrapping `android.graphics.pdf.PdfRenderer` directly: `getPageCount(uri)` and `renderPage(uri, page, scale)`, same shape `pdfToImages.ts` always expected. No third-party dependency for this layer at all now.                                                                                                                                                                    |
+| HTML → PDF export                                  | `expo-print` (`Print.printToFileAsync`)                                                                                                         | matches SDK 56                                    | First-party, WebView-based, routes through Android's real print framework. If Phase 0's spike shows meaningfully better selectability or page-break behavior from `react-native-html-to-pdf` instead, swap it in — same architectural slot, don't rebuild around it.                                                                                                                                                                                                                                                                       |
+| Existing-PDF metadata (page size, font inspection) | `@cantoo/pdf-lib`                                                                                                                               | 2.7.1                                             | Maintained, API-compatible fork of `pdf-lib`. The original `pdf-lib` (Hopding) is effectively unmaintained — no response to issues/PRs since 2023–2024 — and the ecosystem (including projects like Stirling-PDF) has migrated to this fork. Read-only use here: `PDFDocument.load()`, `getPage(i).getSize()`, and font-dictionary inspection for Section 9's legacy-font detector. Not used for drawing Devanagari text.                                                                                                                  |
+| Devanagari font                                    | Noto Sans Devanagari + Noto Serif Devanagari, **variable fonts** (`wght`/`wdth` axes, Thin–Black in one file per family), bundled as app assets | latest from the `google/fonts` repo (OFL license) | Free, open, complete Devanagari OpenType coverage. A variable font was used instead of separate static Regular/Bold files because that's what's actually published for these two families now — one `@font-face` per family, with `font-weight: 100 900`, covers every weight Chromium needs; no separate Bold file to keep in sync.                                                                                                                                                                                                       |
+| Edit state                                         | `zustand`                                                                                                                                       | 5.0.14                                            | Not the hard part of this app — minimal API, no boilerplate.                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| Open PDF from device storage                       | `expo-document-picker`                                                                                                                          | matches SDK 56                                    | First-party file picker; needed for Phase 1's "open an existing PDF from device storage."                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| Font/asset base64 loading                          | `expo-asset` + `expo-file-system`                                                                                                               | matches SDK 56                                    | Backs `fontAsset.ts` — loads and base64-encodes the bundled font once.                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| Sharing exported PDF                               | `expo-sharing`                                                                                                                                  | matches SDK 56                                    | Gets a print-pipeline output PDF (saved to app cache) into an external viewer app — required for Phase 0's "open in at least two different PDF viewers" check.                                                                                                                                                                                                                                                                                                                                                                             |
+| Unique edit IDs                                    | `expo-crypto` (`randomUUID()`)                                                                                                                  | matches SDK 56                                    | First-party; avoids adding a dependency just for UUIDs.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| Testing                                            | `jest` + `jest-expo`                                                                                                                            | matches SDK 56                                    | Required for `coordinateMath.ts`'s pure functions (Section 11).                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| Lint/format                                        | `eslint` (`eslint-config-expo`) + `prettier`                                                                                                    | latest                                            | Run before considering any checklist item done.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| Language                                           | TypeScript, strict mode                                                                                                                         | —                                                 | No `any` without a one-line justifying comment.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 
 ### 4.2 The dependency risk this section flagged — confirmed broken, then resolved
 
@@ -87,7 +91,7 @@ A problem occurred configuring project ':react-native-pdf-page-image'.
          Remote host terminated the handshake
 ```
 
-Root cause: the module's own `android/build.gradle` declares an isolated `buildscript {}` block pinning `com.android.tools.build:gradle:3.5.4` (Android Gradle Plugin from 2019/2020), resolved independently of the root project's toolchain. That old tooling's bundled HTTP client can't complete a modern TLS handshake against Maven Central under Gradle 9.x / JDK 17 — confirmed *not* a transient network issue, since a plain `curl` to the same Maven Central URL succeeded instantly (TLS 1.3, HTTP 200) from the same machine at the same time. A direct, concrete consequence of the package's staleness, exactly the failure mode this section was written to anticipate.
+Root cause: the module's own `android/build.gradle` declares an isolated `buildscript {}` block pinning `com.android.tools.build:gradle:3.5.4` (Android Gradle Plugin from 2019/2020), resolved independently of the root project's toolchain. That old tooling's bundled HTTP client can't complete a modern TLS handshake against Maven Central under Gradle 9.x / JDK 17 — confirmed _not_ a transient network issue, since a plain `curl` to the same Maven Central URL succeeded instantly (TLS 1.3, HTTP 200) from the same machine at the same time. A direct, concrete consequence of the package's staleness, exactly the failure mode this section was written to anticipate.
 
 **Resolution (ADR 0004): built the in-house fallback**, not a `patch-package` workaround — see ADR 0004 for the full reasoning. `modules/pdf-page-image` is a local Expo Module (Kotlin) wrapping `android.graphics.pdf.PdfRenderer` directly, exposing `getPageCount(uri)` and `renderPage(uri, page, scale)` — the same shape `pdfToImages.ts` always expected, so nothing above that wrapper layer changed. `react-native-pdf-page-image` was removed from `package.json` entirely.
 
@@ -180,12 +184,12 @@ Canonical unit for every stored edit is **PDF points** (the page's real, resolut
 type TextEdit = {
   type: 'text';
   id: string;
-  page: number;              // 0-indexed
-  xPt: number;                // top-left origin, page-relative, in PDF points
+  page: number; // 0-indexed
+  xPt: number; // top-left origin, page-relative, in PDF points
   yPt: number;
   fontSizePt: number;
   text: string;
-  color: string;              // hex
+  color: string; // hex
   fontFamily: 'NotoSansDevanagari' | 'NotoSerifDevanagari' | string;
 };
 
@@ -197,7 +201,7 @@ type MaskEdit = {
   yPt: number;
   wPt: number;
   hPt: number;
-  color: string;               // sampled background color to paint over old text
+  color: string; // sampled background color to paint over old text
 };
 
 type Edit = TextEdit | MaskEdit;
@@ -206,7 +210,7 @@ type PageState = {
   pageIndex: number;
   widthPt: number;
   heightPt: number;
-  backgroundImageUri: string;   // local file:// path to the rendered JPEG
+  backgroundImageUri: string; // local file:// path to the rendered JPEG
   imagePxWidth: number;
   imagePxHeight: number;
   edits: Edit[];
@@ -223,39 +227,59 @@ type DocumentState = {
 ## 8. Module specs
 
 ### `coordinateMath.ts`
+
 Three conversions, all origin top-left (no Y-flip anywhere in this pipeline — HTML/CSS, RN views, and image pixels all share top-left origin; only raw PDF drawing operations use bottom-left origin, and this architecture never touches that directly):
 
 ```typescript
 // Screen (dp) -> Points, when the user taps/types in the live overlay
-function dpToPt(xDp: number, yDp: number, viewWidthDp: number, pageWidthPt: number): { xPt: number; yPt: number };
+function dpToPt(
+  xDp: number,
+  yDp: number,
+  viewWidthDp: number,
+  pageWidthPt: number,
+): { xPt: number; yPt: number };
 
 // Points -> Screen (dp), to position stored edits back onto the live view
-function ptToDp(xPt: number, yPt: number, viewWidthDp: number, pageWidthPt: number): { xDp: number; yDp: number };
+function ptToDp(
+  xPt: number,
+  yPt: number,
+  viewWidthDp: number,
+  pageWidthPt: number,
+): { xDp: number; yDp: number };
 
 // Points -> background-image pixels, for the HTML compositor at save time
-function ptToImagePx(xPt: number, yPt: number, imagePxWidth: number, pageWidthPt: number): { x: number; y: number };
+function ptToImagePx(
+  xPt: number,
+  yPt: number,
+  imagePxWidth: number,
+  pageWidthPt: number,
+): { x: number; y: number };
 ```
 
 All three are simple linear scale conversions (`scale = target / pageWidthPt`, or its inverse) — no rotation, no baseline offset math is needed anywhere in Plan A, because nothing here writes directly to PDF content-stream coordinates.
 
 ### `pdfToImages.ts`
+
 Wraps the in-house `pdf-page-image` local Expo Module (`modules/pdf-page-image` — see Section 4.2, ADR 0004; this is the only file that should import from `modules/pdf-page-image` directly). Renders the specific page being edited at 2–3× its point-dimensions (e.g. a 595×842pt A4 page → ~1190×1684px or higher) so text stays crisp through the print pipeline. Returns `{ uri, pxWidth, pxHeight }`.
 
 ### `htmlCompositor.ts`
+
 Builds the full multi-page HTML string for export. One `<div>` per page in the document (even unedited pages need their background image, since export regenerates the whole document in one print call), sized to that page's background image pixel dimensions:
 
 ```typescript
 function pageHtml(page: PageState): string {
-  const layers = page.edits.map(e => {
-    const { x, y } = ptToImagePx(e.xPt, e.yPt, page.imagePxWidth, page.widthPt);
-    if (e.type === 'mask') {
-      const wPx = e.wPt * (page.imagePxWidth / page.widthPt);
-      const hPx = e.hPt * (page.imagePxWidth / page.widthPt);
-      return `<div style="position:absolute;left:${x}px;top:${y}px;width:${wPx}px;height:${hPx}px;background:${e.color}"></div>`;
-    }
-    const fontPx = e.fontSizePt * (page.imagePxWidth / page.widthPt);
-    return `<span style="position:absolute;left:${x}px;top:${y}px;font-size:${fontPx}px;font-family:'${e.fontFamily}';color:${e.color}">${escapeHtml(e.text)}</span>`;
-  }).join('');
+  const layers = page.edits
+    .map((e) => {
+      const { x, y } = ptToImagePx(e.xPt, e.yPt, page.imagePxWidth, page.widthPt);
+      if (e.type === 'mask') {
+        const wPx = e.wPt * (page.imagePxWidth / page.widthPt);
+        const hPx = e.hPt * (page.imagePxWidth / page.widthPt);
+        return `<div style="position:absolute;left:${x}px;top:${y}px;width:${wPx}px;height:${hPx}px;background:${e.color}"></div>`;
+      }
+      const fontPx = e.fontSizePt * (page.imagePxWidth / page.widthPt);
+      return `<span style="position:absolute;left:${x}px;top:${y}px;font-size:${fontPx}px;font-family:'${e.fontFamily}';color:${e.color}">${escapeHtml(e.text)}</span>`;
+    })
+    .join('');
   return `<div style="position:relative;width:${page.imagePxWidth}px;height:${page.imagePxHeight}px;background-image:url('${page.backgroundImageUri}');background-size:cover">${layers}</div>`;
 }
 
@@ -270,25 +294,31 @@ Masks render before text at the same coordinate (DOM order or `z-index`) so new 
 **Font embedding — do this, not a file path:** embed the Devanagari font as base64 inside an `@font-face` rule in the HTML `<style>` block. WebView print (especially WKWebView on iOS, and unreliably on some Android WebView versions) does not consistently resolve local `file://` paths for CSS assets. Base64-inline it once via `fontAsset.ts` and reuse the string.
 
 ### `exportPdf.ts`
+
 Calls `Print.printToFileAsync({ html, width, height })` with `width`/`height` in points matching the source document's actual page size (e.g. 595×842 for A4 — read real values from `@cantoo/pdf-lib`'s `getSize()`, don't hardcode A4 if the source PDF might not be A4).
 
 ### `legacyFontDetector.ts`
+
 On document load, use `@cantoo/pdf-lib`'s `PDFDocument.load()` to enumerate embedded font names across all pages. Match against known legacy Devanagari font name patterns: `KrutiDev*`, `Shivaji*`, `Chanakya*`, `DevLys*`, `Walkman-Chanakya*`, `Agra*`, `Amar*`. If any match, populate `DocumentState.legacyFontWarnings` and surface `LegacyFontWarning.tsx` before allowing edits on that specific page — **do not silently allow masking/editing** on a page using one of these encodings (see Section 9 for why).
 
 ### `EditableTextOverlay.tsx`
+
 On tap, spawns an absolutely-positioned, transparent-background `<TextInput>` at the tapped location, using the bundled Devanagari font family. Because this is a real native `TextInput`, Android's own text stack (HarfBuzz-backed since Android O) shapes Devanagari correctly live, with zero custom shaping code. On blur/submit, converts the `TextInput`'s dp position to points (`dpToPt`) and commits a `TextEdit` to `editStore`.
 
 ### `MaskOverlay.tsx`
+
 Lets the user drag out a rectangle over existing burned-in text they want to replace. On release: sample the average color of the pixels just outside the selected rectangle (from the background image) to use as the mask fill color, then commit a `MaskEdit` to `editStore`, followed immediately by spawning an `EditableTextOverlay` in the same region for the replacement text.
 
 ## 9. Why the legacy-font check is not optional
 
-Pre-Unicode Devanagari fonts (Kruti Dev, Shivaji, Chanakya, DevLys, and similar) work by mapping Latin keystrokes to Devanagari **shapes** purely visually — the underlying stored bytes are plain ASCII/Latin, not Unicode Devanagari code points. If a page is set in KrutiDev and the app masks over what visually looks like "क" without checking the font, the byte actually stored there is some Latin letter, and any *extraction* of that region (search, copy, accessibility tools) will yield English gibberish, not "क". Detecting and warning before edit prevents building on top of a document whose text layer is already fundamentally mismatched with what's visually displayed.
+Pre-Unicode Devanagari fonts (Kruti Dev, Shivaji, Chanakya, DevLys, and similar) work by mapping Latin keystrokes to Devanagari **shapes** purely visually — the underlying stored bytes are plain ASCII/Latin, not Unicode Devanagari code points. If a page is set in KrutiDev and the app masks over what visually looks like "क" without checking the font, the byte actually stored there is some Latin letter, and any _extraction_ of that region (search, copy, accessibility tools) will yield English gibberish, not "क". Detecting and warning before edit prevents building on top of a document whose text layer is already fundamentally mismatched with what's visually displayed.
 
 ## 10. Phased build plan (build and verify in this order)
 
 ### Phase 0 — Spike (must pass before any other phase starts) — ✅ PASSED, verified on a real device
+
 Prove the core architectural assumption before writing app code. This phase validates two independent things — Devanagari shaping through the print pipeline, and whether the chosen native page-rasterization module actually works — and both are now confirmed, not just built/bundled.
+
 - [x] Minimal Expo + custom dev client project with `expo-print` installed.
 - [x] Hardcoded HTML string containing real Devanagari text with at least: one consonant conjunct (e.g. क्ष or ज्ञ), one reph, one matra above and one below the baseline. — `App.tsx`, same sentences as `fixtures/devanagari-fixture.html`.
 - [x] Devanagari font embedded as base64 `@font-face` per Section 8. — `src/lib/fontAsset.ts` + `App.tsx`.
@@ -301,6 +331,7 @@ Prove the core architectural assumption before writing app code. This phase vali
 - [x] **Runtime rasterization confirmed on the same physical device**: pushed `fixtures/devanagari-fixture.pdf` into the app's sandboxed cache dir (`adb push` to `/data/local/tmp` + `run-as cp`), called `getPageCount()` (returned `1`, correct) and `renderPage(uri, 0, 2)` (returned `pxWidth=1224 pxHeight=1584` — exactly 2× the fixture's 612×792pt US Letter page, confirming the scale math) through a temporary, uncommitted test button, then pulled the produced PNG off-device and visually confirmed it's a correct, undistorted rasterization of the actual fixture content (same headline text, same footer URL/timestamp, same Devanagari rendering as the print-pipeline PDF). `PdfRenderer.Page.render()` works correctly end-to-end on real hardware, not just in the build graph.
 
 ### Phase 1 — MVP: single-page edit and export — ✅ PASSED, verified on a real device
+
 - [x] Open an existing PDF from device storage. **Deviates from this checklist's original wording**: uses `expo-document-picker` + the in-house `pdf-page-image` rasterizer (`PdfPageViewer.tsx`), not `react-native-pdf`, for the actual edit canvas. Section 6's own module spec already defined `PdfPageViewer.tsx` as "PNG background + live overlays" - the Render & Print architecture needs the edit canvas to be the exact same rasterized image the export pipeline composites onto, not a second, independent PDF renderer that could disagree with it pixel-for-pixel. `react-native-pdf` stays installed for Phase 2's multi-page browsing, where its scrolling/navigation is the actual point - this was a stale checklist wording, not a build-time architecture change, so it's called out here rather than silently left inconsistent.
 - [x] Display page 1; tapping anywhere spawns a `TextInput` at that location. — `App.tsx`'s `handleTap` + `EditableTextOverlay.tsx`.
 - [x] Typing Hindi text shows correct live conjunct formation (native `TextInput` shaping). — confirmed on-device: typed via Gboard's Hindi transliteration layout, reph (धर्म) rendered correctly joined in the live overlay.
@@ -309,12 +340,14 @@ Prove the core architectural assumption before writing app code. This phase vali
 - **On-device bug found and fixed during this phase**: exporting a page with a real Devanagari text edit (custom variable font) together with a 2x-scale background image hung the `expo-print` WebView indefinitely - reproducible only with all three of {Devanagari text, the embedded variable font, and a base64-inlined PNG background} present together; each pair alone exported fine. Root-caused to the background image's encoding rather than its pixel dimensions: switching `pdf-page-image`'s native output from PNG to JPEG (quality 92, no visible quality loss - see `PdfPageImageModule.kt`) fixed the hang while keeping the full 2-3x raster scale the spec requires. See CHANGELOG for details.
 
 ### Phase 2 — Multi-page support — ✅ PASSED, verified on a real device
+
 - [x] Page navigation (next/previous). — `App.tsx`'s Prev/Next buttons + `goToPage`, shown only when the document has more than one page.
 - [x] Edits tracked per-page in `DocumentState.pages[i].edits`, persisted when navigating away and back. — this was already true of `editStore.ts`'s data model and API (every action takes a `page` index) before this phase; the only real gap was that `App.tsx` only ever rasterized and displayed `pages[0]`. Closed by rasterizing every page up front at open time (not lazily per navigation - see that file's docstring for why) and rendering `pages[currentPageIndex]`.
 - [x] Export produces every page of the document in one PDF, not only the page that was edited. — already true of `exportPdf.ts`/`htmlCompositor.ts` before this phase (both already looped over `doc.pages`); this checklist item was effectively completed as a side effect of Phase 1's export pipeline design, just unverified with more than one page until now.
 - **Verified on-device** with a new, separate 3-page fixture (`fixtures/multipage-fixture.pdf` - see `fixtures/README.md`, kept separate from the canonical `devanagari-fixture.pdf` used for Phase 0/1/3): added a distinct text edit on each of the 3 pages, navigated 1→2→3→1 and confirmed each page still showed exactly its own edit (no leakage or loss), then exported and confirmed the resulting 3-page PDF has the correct background and correct edit text on every page, pulled off-device and inspected with `pdftoppm`.
 
 ### Phase 3 — Masking / replace-existing-text — ✅ PASSED, verified on a real device
+
 - [x] Long-press or a dedicated "replace" mode triggers `MaskOverlay`. **Deviates from this checklist's "or" in a deliberate way**: implemented as a dedicated "Switch to replace text mode" toggle button in `App.tsx`, not a long-press. The spec explicitly allows either trigger; a toggle avoids `MaskOverlay`'s drag-to-select racing against `PdfPageViewer`'s own tap-to-add-text on the exact same gesture (a long-press-to-enter, drag-to-select sequence on one continuous touch is materially harder to disambiguate reliably from RN's gesture responder system than a separate mode switch).
 - [x] User drags to define the region to mask. — `MaskOverlay.tsx`'s `PanResponder`, converting the drag rectangle's dp start point and dp size to PDF points via `coordinateMath.ts`'s `dpToPt`/`dpSizeToPt` (a size is a zero-offset scale, kept as separate named functions from the position converters specifically to avoid the position-vs-size unit confusion AGENTS.md calls out as this codebase's likeliest bug class). A `minDragDp` threshold (default 12dp) filters out accidental taps so replace mode doesn't fire on an ordinary tap.
 - [x] Background color sampling implemented (see Section 8). — new native `sampleAverageColor` `AsyncFunction` on the existing `pdf-page-image` Expo Module (`PdfPageImageModule.kt`): decodes the page's already-rasterized background JPEG and averages the pixels in a band around (but excluding) the drawn rectangle, so the mask picks up the real page background color instead of a hardcoded white/gray. Fails closed to `#ffffff` on any decode error or on the degenerate case where there's no surrounding band left to sample (e.g. the rectangle fills the whole page) - same "never assume, warn/fail-safe instead" posture as the legacy-font check in Section 9, applied here to color sampling. Wrapped by `pdfToImages.ts`'s `sampleAverageColor` and called from `App.tsx`'s `handleMaskDrawn`, which falls back to `#ffffff` if the native call itself throws.
@@ -322,12 +355,15 @@ Prove the core architectural assumption before writing app code. This phase vali
 - **Verified on-device** with the canonical `fixtures/devanagari-fixture.pdf` (kept identical across Phase 0/1/3 per AGENTS.md's testing guidance, for run-to-run comparability): enabled replace mode, dragged a rectangle over the fixture's first burned-in word ("धर्म"), confirmed the mask filled with a color visually indistinguishable from the page's white background (color sampling working, not just falling back to the white default) and that a text input auto-focused in the same spot, typed a replacement via Gboard's Hindi transliteration layout, confirmed the live preview showed the replacement rendered on top of the mask with correct shaping, then exported and pulled the resulting PDF off-device with `pdftoppm`: the exported page matches the live preview pixel-for-pixel in that region — masked-and-replaced text, not just overlaid text.
 - **Native rebuild required**: `sampleAverageColor` is a new native `AsyncFunction`, so `:pdf-page-image:compileDebugKotlin` and `:app:assembleDebug` needed a real (non-incremental-stale) rebuild and device reinstall before this phase could be tested - confirmed both ran and the new function was callable from JS, not just present in source.
 
-### Phase 4 — Legacy font detection
-- [ ] `legacyFontDetector.ts` runs on document load.
-- [ ] Matches implemented per Section 9's pattern list.
-- [ ] `LegacyFontWarning.tsx` blocks or warns before edits on an affected page.
+### Phase 4 — Legacy font detection — ✅ PASSED, verified on a real device
+
+- [x] `legacyFontDetector.ts` runs on document load. — `App.tsx`'s `openPdf` reads the picked file as base64 (`expo-file-system/legacy`, same pattern `exportPdf.ts` already used for its own re-parse check) and calls `detectLegacyFonts` once pages are rasterized, storing the result in `DocumentState.legacyFontWarnings`. **Fails closed per AGENTS.md**: if the read or `PDFDocument.load`/parse itself throws, `detectLegacyFontWarnings` treats _every_ page as unknown-encoding (one warning per page with a sentinel `fontName`) rather than defaulting to "assume Unicode, proceed."
+- [x] Matches implemented per Section 9's pattern list. — unchanged from the pure-logic module built ahead of schedule pre-Phase-0 (`isLegacyDevanagariFontName`, KrutiDev/Shivaji/Chanakya/DevLys/Walkman-Chanakya/Agra/Amar); `detectLegacyFonts`'s parameter type was widened from `Uint8Array` to `Uint8Array | string` (base64) to match `@cantoo/pdf-lib`'s own `PDFDocument.load` flexibility, so `App.tsx` doesn't need a separate decode step.
+- [x] `LegacyFontWarning.tsx` blocks or warns before edits on an affected page. — new banner component, shown above the page viewer whenever the _current_ page (not the whole document) has any `legacyFontWarnings` entries; distinguishes a known legacy font name from the unknown-encoding fallback in its message. `App.tsx` derives a per-page `editingBlocked` flag from this and gates both edit paths: `handleTap` returns early, and `MaskOverlay`'s `active` prop is forced off (with the mode-toggle `Button` itself disabled) so a drag can't even start on a blocked page.
+- **Verified on-device**: opening the canonical `devanagari-fixture.pdf` shows no warning and both edit modes remain enabled (no false positive on the real Unicode fixture). A synthetic fixture built with `@cantoo/pdf-lib` (plain Helvetica text with its `BaseFont` renamed to `ABCDEF+KrutiDev010`, mirroring `legacyFontDetector.test.ts`'s own positive-path test) was pushed to the device and opened: the banner rendered with the exact detected font name, the "Switch to replace text mode" button was visibly disabled, and tapping the page added no text edit.
 
 ### Phase 5 — Optional, later, only if Phase 0–4 is in real use and you need it
+
 A vector-preserving, smaller-diff alternative export path: `@cantoo/pdf-lib` (see Section 4.1 for why this fork over the unmaintained original `pdf-lib`) + `harfbuzzjs` (the actual HarfBuzz C++ project compiled to WASM by the HarfBuzz maintainers themselves, not a reimplementation — safer than `fontkit` for a script this edge-case-heavy). `harfbuzzjs.shape()` returns glyph IDs and x/y advances via `getGlyphInfosAndPositions()`; walk that array and call the library's low-level glyph-placement API (not its string-based `drawText()`) to place each shaped glyph at its exact coordinate, with font subsetting to keep file size down. This requires real, non-trivial plumbing (font-unit-to-point conversion, subsetting, no shortcuts) — do not attempt this before Phases 0–4 are working and validated in practice.
 
 ## 11. Testing / definition of done (per release, not just per phase)
@@ -340,10 +376,11 @@ A vector-preserving, smaller-diff alternative export path: `@cantoo/pdf-lib` (se
 ## 12. Known risks and things this spec could not verify with certainty
 
 Be aware of these; validate them yourself rather than assuming either outcome:
+
 - **Text selectability of `expo-print` output: confirmed selectable**, not merely assumed — Phase 0's on-device run extracted the exact source Unicode string back out of the exported PDF via `pdftotext`, so this isn't a flattened image. (Still a bonus, not a hard requirement, per the original framing here — but now a confirmed bonus rather than an open question.)
 - **Very large documents (100+ pages) exported in a single print call** may be slow or memory-heavy on low-end Android hardware. If this becomes a real problem, export in batches of a few pages and merge the resulting PDFs with `@cantoo/pdf-lib`'s page-copying (`copyPages`), which is cheap and doesn't touch text rendering at all — do this only if you actually hit the problem, not preemptively.
 - **Versions are now pinned (Section 4.1, checked July 2026):** Expo SDK 56, `react-native-pdf` 7.0.4, `expo-print` matching SDK 56, `@cantoo/pdf-lib` 2.7.1. Re-check this table before starting a build far in the future.
 - **`react-native-pdf-page-image` was confirmed broken on this toolchain, not just theoretically risky** — caught during initial project scaffolding, before Phase 1 began, exactly what Section 10's Phase 0 checklist item was written to catch. Resolved per ADR 0004 (in-house `PdfRenderer` Expo Module, see Section 4.2).
 - **The in-house replacement module is confirmed to work at runtime, not just to build.** Phase 0's on-device run exercised `getPageCount()`/`renderPage()` against the repo's fixture PDF and pulled the resulting bitmap off-device for visual inspection — correct page count, correct pixel dimensions for the requested scale, correct visual content. Section 10's last open Phase 0 item is closed; Phase 1 is unblocked.
-- **`expo-file-system`'s top-level legacy methods (`readAsStringAsync`, `getInfoAsync`, etc.) throw unconditionally in the installed SDK version** — a real runtime bug, only caught by running on a real device, that every unit test's mocking had silently hidden. Any *new* code that needs these must import from `expo-file-system/legacy`, not the package root. Already fixed in `fontAsset.ts` and `exportPdf.ts`; grep for `from 'expo-file-system'` (without `/legacy`) before adding new file-system code.
+- **`expo-file-system`'s top-level legacy methods (`readAsStringAsync`, `getInfoAsync`, etc.) throw unconditionally in the installed SDK version** — a real runtime bug, only caught by running on a real device, that every unit test's mocking had silently hidden. Any _new_ code that needs these must import from `expo-file-system/legacy`, not the package root. Already fixed in `fontAsset.ts` and `exportPdf.ts`; grep for `from 'expo-file-system'` (without `/legacy`) before adding new file-system code.
 - **A background PNG at 2x scale, combined with Devanagari text through an embedded variable font, hung `expo-print`'s WebView indefinitely** — only caught on a real device with a real conjunct-and-reph fixture; none of the individual factors alone reproduced it. Fixed by switching the rasterizer's output format to JPEG (quality 92) instead of reducing scale, so the 2-3x quality requirement in Section 4.1/AGENTS.md still holds. If this class of hang reappears on a different image or a larger document, re-check whether it's still specifically the {complex-script-shaping + large-inlined-image} combination, or something new.
