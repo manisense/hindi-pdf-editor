@@ -6,11 +6,13 @@ import * as Sharing from 'expo-sharing';
 import { StatusBar } from 'expo-status-bar';
 
 import { EditableTextOverlay } from './src/components/EditableTextOverlay';
+import { MaskOverlay, type DrawnMaskRect } from './src/components/MaskOverlay';
 import { PdfPageViewer } from './src/components/PdfPageViewer';
+import { ptSizeToImagePx, ptToImagePx } from './src/lib/coordinateMath';
 import { exportPdf } from './src/lib/exportPdf';
 import { getFontBase64 } from './src/lib/fontAsset';
-import { getPageCount, renderPage } from './src/lib/pdfToImages';
-import { useEditStore, type PageState, type TextEdit } from './src/state/editStore';
+import { getPageCount, renderPage, sampleAverageColor } from './src/lib/pdfToImages';
+import { useEditStore, type MaskEdit, type PageState, type TextEdit } from './src/state/editStore';
 
 /**
  * Phase 1+2 editor (spec Section 10): pick an existing PDF, browse its pages, tap a page to
@@ -39,6 +41,10 @@ const DEFAULT_FONT_SIZE_PT = 14;
 // Output px per PDF point when rasterizing the page background - see spec Section 4.1/AGENTS.md's
 // "2-3x, not arbitrarily higher" performance constraint.
 const RASTER_SCALE = 2;
+// Width, in background-image px, of the band sampled just outside a drawn mask rectangle to
+// pick its fill color (Phase 3, spec Section 8) - a few points' worth at RASTER_SCALE, enough
+// to average past a little JPEG noise without reaching into an unrelated neighboring text line.
+const MASK_SAMPLE_MARGIN_PX = 16;
 
 type Status =
   | { state: 'idle' }
@@ -55,10 +61,15 @@ export default function App() {
   const [status, setStatus] = useState<Status>({ state: 'idle' });
   const [focusedEditId, setFocusedEditId] = useState<string | null>(null);
   const [currentPageIndex, setCurrentPageIndex] = useState(0);
+  // Phase 3 (spec Section 10): a dedicated mode toggle, not a long-press gesture - the spec
+  // allows either trigger, and a toggle avoids MaskOverlay's drag-to-select racing against
+  // PdfPageViewer's own tap-to-add-text on the exact same gesture.
+  const [replaceMode, setReplaceMode] = useState(false);
 
   const document = useEditStore((s) => s.document);
   const loadDocument = useEditStore((s) => s.loadDocument);
   const addTextEdit = useEditStore((s) => s.addTextEdit);
+  const addMaskEdit = useEditStore((s) => s.addMaskEdit);
   const updateTextEdit = useEditStore((s) => s.updateTextEdit);
   const removeEdit = useEditStore((s) => s.removeEdit);
 
@@ -102,6 +113,8 @@ export default function App() {
     }
   };
 
+  const page = document?.pages[currentPageIndex];
+
   const goToPage = (index: number) => {
     if (!document || index < 0 || index >= document.pages.length) return;
     setCurrentPageIndex(index);
@@ -109,6 +122,10 @@ export default function App() {
   };
 
   const handleTap = (xPt: number, yPt: number) => {
+    // Belt-and-suspenders: MaskOverlay's PanResponder claims the gesture before it reaches
+    // PdfPageViewer's Pressable while replaceMode is on, so this shouldn't normally fire, but
+    // skipping it here too avoids ever stacking a stray text edit under a freshly drawn mask.
+    if (replaceMode) return;
     const edit = addTextEdit(currentPageIndex, {
       xPt,
       yPt,
@@ -127,6 +144,47 @@ export default function App() {
     if (focusedEditId === id) {
       setFocusedEditId(null);
     }
+  };
+
+  const handleMaskDrawn = async (rect: DrawnMaskRect) => {
+    if (!page) return;
+    const { x: xPx, y: yPx } = ptToImagePx(rect.xPt, rect.yPt, page.imagePxWidth, page.widthPt);
+    const { wPx, hPx } = ptSizeToImagePx(rect.wPt, rect.hPt, page.imagePxWidth, page.widthPt);
+
+    let color = '#ffffff';
+    try {
+      color = await sampleAverageColor(
+        page.backgroundImageUri,
+        Math.round(xPx),
+        Math.round(yPx),
+        Math.round(wPx),
+        Math.round(hPx),
+        MASK_SAMPLE_MARGIN_PX,
+      );
+    } catch (error) {
+      // Fails closed to a plain white fill rather than blocking the mask entirely - same
+      // "never assume, warn instead" spirit as AGENTS.md's font-detection rule, applied here
+      // to color sampling.
+      console.warn('sampleAverageColor failed, falling back to white', error);
+    }
+
+    addMaskEdit(currentPageIndex, {
+      xPt: rect.xPt,
+      yPt: rect.yPt,
+      wPt: rect.wPt,
+      hPt: rect.hPt,
+      color,
+    });
+
+    const textEdit = addTextEdit(currentPageIndex, {
+      xPt: rect.xPt,
+      yPt: rect.yPt,
+      fontSizePt: DEFAULT_FONT_SIZE_PT,
+      text: '',
+      color: '#111111',
+      fontFamily: 'NotoSansDevanagari',
+    });
+    setFocusedEditId(textEdit.id);
   };
 
   const saveAndExport = async () => {
@@ -161,8 +219,6 @@ export default function App() {
       </View>
     );
   }
-
-  const page = document?.pages[currentPageIndex];
 
   return (
     <View style={styles.container}>
@@ -201,28 +257,47 @@ export default function App() {
               </View>
             )}
 
-            <Text style={styles.hint}>Tap anywhere on the page to add Hindi text.</Text>
+            <View style={styles.modeRow}>
+              <Button
+                title={replaceMode ? '✓ Replace text mode' : 'Switch to replace text mode'}
+                onPress={() => setReplaceMode((prev) => !prev)}
+              />
+            </View>
+            <Text style={styles.hint}>
+              {replaceMode
+                ? 'Drag a box over existing text to mask and replace it.'
+                : 'Tap anywhere on the page to add Hindi text.'}
+            </Text>
             <PdfPageViewer
               // Remounts the viewer (and drops any transient gesture state) on page change,
               // instead of the same instance silently rendering a different page's image.
               key={page.pageIndex}
               page={page}
               onTap={handleTap}
-              renderOverlays={(viewWidthDp) =>
-                page.edits
-                  .filter((e): e is TextEdit => e.type === 'text')
-                  .map((edit) => (
-                    <EditableTextOverlay
-                      key={edit.id}
-                      edit={edit}
-                      viewWidthDp={viewWidthDp}
-                      pageWidthPt={page.widthPt}
-                      autoFocus={edit.id === focusedEditId}
-                      onChangeText={(text) => updateTextEdit(currentPageIndex, edit.id, { text })}
-                      onBlur={() => handleBlur(edit.id, edit.text)}
-                    />
-                  ))
-              }
+              renderOverlays={(viewWidthDp) => (
+                <>
+                  <MaskOverlay
+                    masks={page.edits.filter((e): e is MaskEdit => e.type === 'mask')}
+                    viewWidthDp={viewWidthDp}
+                    pageWidthPt={page.widthPt}
+                    active={replaceMode}
+                    onMaskDrawn={handleMaskDrawn}
+                  />
+                  {page.edits
+                    .filter((e): e is TextEdit => e.type === 'text')
+                    .map((edit) => (
+                      <EditableTextOverlay
+                        key={edit.id}
+                        edit={edit}
+                        viewWidthDp={viewWidthDp}
+                        pageWidthPt={page.widthPt}
+                        autoFocus={edit.id === focusedEditId}
+                        onChangeText={(text) => updateTextEdit(currentPageIndex, edit.id, { text })}
+                        onBlur={() => handleBlur(edit.id, edit.text)}
+                      />
+                    ))}
+                </>
+              )}
             />
 
             <Button
@@ -272,6 +347,9 @@ const styles = StyleSheet.create({
   pagerLabel: {
     fontSize: 14,
     fontWeight: '600',
+  },
+  modeRow: {
+    marginBottom: 4,
   },
   spacerTop: {
     marginTop: 16,
