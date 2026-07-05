@@ -50,7 +50,7 @@ export type PageState = {
   widthPt: number;
   /** Page height, in PDF points. */
   heightPt: number;
-  /** Local `file://` path to the rendered background PNG for this page. */
+  /** Local `file://` path to the rendered background image (JPEG) for this page. */
   backgroundImageUri: string;
   /** Rendered background image width, in px. */
   imagePxWidth: number;

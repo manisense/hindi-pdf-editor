@@ -10,7 +10,12 @@ import PdfPageImage from '../../modules/pdf-page-image/src';
  */
 
 export interface PageImage {
-  /** `file://` URI to the rendered PNG, in the app's cache directory. */
+  /**
+   * `file://` URI to the rendered background image, in the app's cache directory. JPEG, not
+   * PNG - confirmed on a real device that a PNG this size, inlined as a base64 data URI
+   * alongside real Devanagari shaping through an embedded variable font, hangs the print
+   * WebView (see `PdfPageImageModule.kt`'s docstring and CHANGELOG for the on-device repro).
+   */
   uri: string;
   /** Rendered bitmap width, in px. */
   pxWidth: number;
@@ -24,7 +29,7 @@ export async function getPageCount(uri: string): Promise<number> {
 }
 
 /**
- * Rasterizes one page of the PDF at `uri` to a PNG, at `scale` px per PDF point.
+ * Rasterizes one page of the PDF at `uri` to a JPEG, at `scale` px per PDF point.
  *
  * @param uri `file://` or `content://` URI to the source PDF.
  * @param page Zero-based page index.

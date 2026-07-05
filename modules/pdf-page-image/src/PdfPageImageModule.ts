@@ -7,7 +7,7 @@ declare class PdfPageImageModule extends NativeModule<Record<never, never>> {
   getPageCount(uri: string): Promise<number>;
 
   /**
-   * Rasterizes one page of the PDF at `uri` to a PNG in the app's cache directory.
+   * Rasterizes one page of the PDF at `uri` to a JPEG in the app's cache directory.
    *
    * @param uri `file://` or `content://` URI to the source PDF.
    * @param page Zero-based page index.

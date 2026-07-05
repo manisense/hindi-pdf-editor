@@ -34,7 +34,7 @@ function makeDocument(overrides: Partial<DocumentState> = {}): DocumentState {
         pageIndex: 0,
         widthPt: 400,
         heightPt: 600,
-        backgroundImageUri: 'file:///fake/page-0.png',
+        backgroundImageUri: 'file:///fake/page-0.jpg',
         imagePxWidth: 800,
         imagePxHeight: 1200,
         edits: [],
@@ -53,7 +53,9 @@ describe('exportPdf', () => {
   it("passes the document's stored page size (in points) to Print.printToFileAsync, not a hardcoded size", async () => {
     const outputBase64 = await makeFixturePdfBase64(400, 600);
 
-    mockReadAsStringAsync.mockResolvedValue(outputBase64);
+    mockReadAsStringAsync.mockImplementation(async (uri: string) =>
+      uri === 'file:///fake/page-0.jpg' ? 'ZmFrZS1qcGVn' : outputBase64,
+    );
     mockGetInfoAsync.mockResolvedValue({ exists: true, size: 1234 });
     mockPrintToFileAsync.mockResolvedValue({ uri: 'file:///fake/output.pdf' });
 
@@ -67,7 +69,10 @@ describe('exportPdf', () => {
     expect(call.width).toBe(400);
     expect(call.height).toBe(600);
     expect(typeof call.html).toBe('string');
-    expect(call.html).toContain('file:///fake/page-0.png');
+    // The background image must be inlined as a data URI, not left as a file:// reference -
+    // confirmed on a real device that the print WebView renders those blank (see CHANGELOG).
+    expect(call.html).not.toContain('file:///fake/page-0.jpg');
+    expect(call.html).toContain('data:image/jpeg;base64,ZmFrZS1qcGVn');
     expect(result).toBe('file:///fake/output.pdf');
   });
 
@@ -87,9 +92,7 @@ describe('exportPdf', () => {
   });
 
   it('throws if the document has no pages', async () => {
-    await expect(exportPdf(makeDocument({ pages: [] }), 'Zm9udA==')).rejects.toThrow(
-      /no pages/,
-    );
+    await expect(exportPdf(makeDocument({ pages: [] }), 'Zm9udA==')).rejects.toThrow(/no pages/);
   });
 
   it('throws if the output file does not exist after export', async () => {

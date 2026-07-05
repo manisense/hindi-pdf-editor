@@ -8,7 +8,7 @@ function makeDocument(pageCount = 2): DocumentState {
       pageIndex,
       widthPt: 595,
       heightPt: 842,
-      backgroundImageUri: `file:///fake/page-${pageIndex}.png`,
+      backgroundImageUri: `file:///fake/page-${pageIndex}.jpg`,
       imagePxWidth: 1190,
       imagePxHeight: 1684,
       edits: [],

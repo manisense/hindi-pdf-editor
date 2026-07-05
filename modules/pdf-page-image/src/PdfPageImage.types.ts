@@ -2,7 +2,7 @@
 export type PdfUri = string;
 
 export interface PageImageResult {
-  /** `file://` URI to the rendered PNG, in the app's cache directory. */
+  /** `file://` URI to the rendered JPEG, in the app's cache directory. */
   uri: string;
   /** Rendered bitmap width, in px. */
   width: number;

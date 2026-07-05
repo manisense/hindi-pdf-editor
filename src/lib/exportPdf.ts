@@ -6,7 +6,7 @@ import * as Print from 'expo-print';
 import * as FileSystem from 'expo-file-system/legacy';
 
 import { documentHtml } from './htmlCompositor';
-import type { DocumentState } from '../state/editStore';
+import type { DocumentState, PageState } from '../state/editStore';
 
 /**
  * Exports the full edited document to a new PDF file via Android's native print pipeline
@@ -28,7 +28,8 @@ export async function exportPdf(doc: DocumentState, devanagariFontBase64: string
   if (!firstPage) {
     throw new Error('exportPdf: document has no pages');
   }
-  const html = documentHtml(doc, devanagariFontBase64);
+  const backgroundImageDataUrls = await Promise.all(doc.pages.map(readBackgroundImageDataUrl));
+  const html = documentHtml(doc, devanagariFontBase64, backgroundImageDataUrls);
 
   // expo-print's `width`/`height` are documented as "pixels" but are actually PDF points at
   // 72 PPI (its own default, 612x792, is exactly US Letter in points) - see spec Section 8.
@@ -40,6 +41,21 @@ export async function exportPdf(doc: DocumentState, devanagariFontBase64: string
 
   await assertNonEmptyAndReopenable(uri);
   return uri;
+}
+
+/**
+ * Reads a page's rasterized background image (`pdfToImages.ts`'s output - JPEG, see that
+ * module's docstring) and returns it as a `data:` URI, so `htmlCompositor.ts` can inline it
+ * directly. Confirmed on a real device that Android's print WebView renders a blank background
+ * when given a `file://` URL in CSS `background-image` - the exact same class of failure the
+ * font already had to work around (spec Section 8) - so this can't be a plain path reference.
+ */
+async function readBackgroundImageDataUrl(page: PageState): Promise<string> {
+  const base64 = await FileSystem.readAsStringAsync(page.backgroundImageUri, {
+    encoding: FileSystem.EncodingType.Base64,
+  });
+  const mime = page.backgroundImageUri.toLowerCase().endsWith('.png') ? 'image/png' : 'image/jpeg';
+  return `data:${mime};base64,${base64}`;
 }
 
 /**

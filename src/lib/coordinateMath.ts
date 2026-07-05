@@ -5,7 +5,7 @@
  * - dp:  device-independent pixels, the unit React Native views/TextInputs are laid out in.
  * - pt:  PDF points, the canonical unit every stored `Edit` is persisted in, taken from the
  *        source document's real page size (`@cantoo/pdf-lib`'s `getSize()`).
- * - px:  pixels of the rasterized background PNG for a page (`pdfToImages.ts`'s output),
+ * - px:  pixels of the rasterized background image for a page (`pdfToImages.ts`'s output),
  *        rendered at 2-3x the page's point-dimensions.
  *
  * All three share a top-left origin (no Y-flip anywhere in this pipeline - only raw PDF
@@ -59,7 +59,7 @@ export function ptToDp(
  *
  * @param xPt Horizontal position, in PDF points, relative to the page's left edge.
  * @param yPt Vertical position, in PDF points, relative to the page's top edge.
- * @param imagePxWidth Width of the rendered background PNG, in px.
+ * @param imagePxWidth Width of the rendered background image, in px.
  * @param pageWidthPt Width of the source PDF page, in points.
  */
 export function ptToImagePx(
