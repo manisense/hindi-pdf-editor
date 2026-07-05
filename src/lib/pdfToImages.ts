@@ -40,3 +40,28 @@ export async function renderPage(uri: string, page: number, scale: number): Prom
   const result = await PdfPageImage.renderPage(uri, page, scale);
   return { uri: result.uri, pxWidth: result.width, pxHeight: result.height };
 }
+
+/**
+ * Samples the average background color in a band surrounding (but excluding) the given
+ * rectangle of a page's rasterized background image - used to pick a `MaskEdit.color` that
+ * matches the page instead of a hardcoded white/gray (Phase 3, spec Section 10).
+ *
+ * @param uri The page's `PageState.backgroundImageUri`.
+ * @param xPx Left edge of the rectangle, in background-image px (see `coordinateMath.ts`'s
+ *   `ptToImagePx`/`ptSizeToImagePx` for converting a stored `MaskEdit`'s pt rectangle here).
+ * @param yPx Top edge of the rectangle, in background-image px.
+ * @param wPx Width of the rectangle, in background-image px.
+ * @param hPx Height of the rectangle, in background-image px.
+ * @param marginPx Width of the surrounding band to sample, in background-image px.
+ * @returns A `#rrggbb` hex color string.
+ */
+export async function sampleAverageColor(
+  uri: string,
+  xPx: number,
+  yPx: number,
+  wPx: number,
+  hPx: number,
+  marginPx: number,
+): Promise<string> {
+  return PdfPageImage.sampleAverageColor(uri, xPx, yPx, wPx, hPx, marginPx);
+}

@@ -2,6 +2,7 @@ package expo.modules.pdfpageimage
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.graphics.Matrix
 import android.graphics.pdf.PdfRenderer
@@ -21,8 +22,10 @@ import java.util.UUID
  * this project's Gradle/JDK toolchain. This module wraps the stable, first-party
  * `android.graphics.pdf.PdfRenderer` API directly, with no third-party dependency.
  *
- * This only rasterizes an existing PDF page to a background PNG image - it never draws
- * Devanagari text itself, so it doesn't touch the non-negotiable rendering rule in AGENTS.md.
+ * This rasterizes an existing PDF page to a background JPEG image, and separately samples
+ * average pixel colors from an already-rendered background image (for Phase 3 masking) - it
+ * never draws Devanagari text itself, so it doesn't touch the non-negotiable rendering rule
+ * in AGENTS.md.
  */
 class PdfPageImageModule : Module() {
   private val context: Context
@@ -40,6 +43,21 @@ class PdfPageImageModule : Module() {
     // an arbitrarily higher number.
     AsyncFunction("renderPage") { uri: String, page: Int, scale: Double ->
       renderPage(uri, page, scale)
+    }
+
+    // All Int params are background-image px (the same space PageState.imagePxWidth/Height and
+    // htmlCompositor.ts's layers live in), not PDF points - see coordinateMath.ts's
+    // ptSizeToImagePx, which callers use to convert a MaskEdit's stored pt rectangle before
+    // calling this. Phase 3 (spec Section 10): lets the caller pick a mask fill color that
+    // matches the page instead of a hardcoded white/gray.
+    AsyncFunction("sampleAverageColor") {
+        uri: String,
+        xPx: Int,
+        yPx: Int,
+        wPx: Int,
+        hPx: Int,
+        marginPx: Int ->
+      sampleAverageColor(uri, xPx, yPx, wPx, hPx, marginPx)
     }
   }
 
@@ -114,6 +132,77 @@ class PdfPageImageModule : Module() {
           height = pxHeight
         )
       }
+    }
+  }
+
+  /**
+   * Averages the pixels in a band `marginPx` wide surrounding (xPx, yPx, wPx, hPx), excluding
+   * the rectangle itself, to approximate the page's background color right around a region the
+   * user is about to mask - not the color of the burned-in text inside the rectangle, which is
+   * exactly what masking is trying to hide. Decodes the whole background JPEG rather than only
+   * the needed band via `BitmapRegionDecoder`: these images are already bounded to 2-3x a
+   * page's point-dimensions per AGENTS.md's performance constraint (a few MB decoded), and this
+   * runs once per user-drawn mask, not in a hot loop, so the simpler full-decode is preferable.
+   */
+  private fun sampleAverageColor(
+    uriString: String,
+    xPx: Int,
+    yPx: Int,
+    wPx: Int,
+    hPx: Int,
+    marginPx: Int
+  ): String {
+    val pfd = try {
+      openParcelFileDescriptor(uriString)
+    } catch (e: Exception) {
+      throw ColorSampleFailedException(uriString, e)
+    }
+    val bitmap = try {
+      pfd.use { BitmapFactory.decodeFileDescriptor(it.fileDescriptor) }
+        ?: throw IllegalStateException("BitmapFactory.decodeFileDescriptor returned null")
+    } catch (e: Exception) {
+      throw ColorSampleFailedException(uriString, e)
+    }
+
+    try {
+      val outerLeft = (xPx - marginPx).coerceIn(0, bitmap.width)
+      val outerTop = (yPx - marginPx).coerceIn(0, bitmap.height)
+      val outerRight = (xPx + wPx + marginPx).coerceIn(0, bitmap.width)
+      val outerBottom = (yPx + hPx + marginPx).coerceIn(0, bitmap.height)
+      val innerLeft = xPx.coerceIn(0, bitmap.width)
+      val innerTop = yPx.coerceIn(0, bitmap.height)
+      val innerRight = (xPx + wPx).coerceIn(0, bitmap.width)
+      val innerBottom = (yPx + hPx).coerceIn(0, bitmap.height)
+
+      var sumR = 0L
+      var sumG = 0L
+      var sumB = 0L
+      var count = 0L
+      for (y in outerTop until outerBottom) {
+        val insideInnerRow = y in innerTop until innerBottom
+        for (x in outerLeft until outerRight) {
+          if (insideInnerRow && x in innerLeft until innerRight) continue
+          val pixel = bitmap.getPixel(x, y)
+          sumR += Color.red(pixel)
+          sumG += Color.green(pixel)
+          sumB += Color.blue(pixel)
+          count++
+        }
+      }
+
+      // Degenerate case (e.g. the rectangle fills the whole page, leaving no surrounding band
+      // to sample) - fail closed to white, the most common real-world page background, rather
+      // than divide by zero or crash.
+      if (count == 0L) return "#ffffff"
+
+      return String.format(
+        "#%02x%02x%02x",
+        (sumR / count).toInt(),
+        (sumG / count).toInt(),
+        (sumB / count).toInt()
+      )
+    } finally {
+      bitmap.recycle()
     }
   }
 }

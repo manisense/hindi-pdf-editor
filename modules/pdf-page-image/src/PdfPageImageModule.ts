@@ -15,6 +15,27 @@ declare class PdfPageImageModule extends NativeModule<Record<never, never>> {
    *   constraint calls for 2-3x here, not an arbitrarily higher number.
    */
   renderPage(uri: string, page: number, scale: number): Promise<PageImageResult>;
+
+  /**
+   * Averages the pixel colors in a band around (but excluding) the given rectangle, to pick a
+   * mask fill color that matches the page background around a region of text being masked out
+   * (Phase 3, spec Section 10). Returns a `#rrggbb` hex string.
+   *
+   * @param uri `file://` URI to the rasterized background JPEG (`PageState.backgroundImageUri`).
+   * @param xPx Left edge of the rectangle, in background-image px.
+   * @param yPx Top edge of the rectangle, in background-image px.
+   * @param wPx Width of the rectangle, in background-image px.
+   * @param hPx Height of the rectangle, in background-image px.
+   * @param marginPx Width of the surrounding band to sample, in background-image px.
+   */
+  sampleAverageColor(
+    uri: string,
+    xPx: number,
+    yPx: number,
+    wPx: number,
+    hPx: number,
+    marginPx: number,
+  ): Promise<string>;
 }
 
 export default requireNativeModule<PdfPageImageModule>('PdfPageImage');

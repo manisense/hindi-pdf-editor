@@ -7,3 +7,6 @@ class PdfOpenFailedException(uri: String, cause: Throwable) :
 
 class PdfPageNotFoundException(page: Int, pageCount: Int) :
   CodedException("Page $page does not exist in this document (it has $pageCount page(s)).")
+
+class ColorSampleFailedException(uri: String, cause: Throwable) :
+  CodedException("Failed to sample background color from $uri: ${cause.message}", cause)
