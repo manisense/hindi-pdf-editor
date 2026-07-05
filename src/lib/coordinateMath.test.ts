@@ -1,6 +1,8 @@
 import {
   dpSizeToPt,
   dpToPt,
+  imagePxSizeToPt,
+  imagePxToPt,
   ptSizeToDp,
   ptSizeToImagePx,
   ptToDp,
@@ -71,6 +73,46 @@ describe('ptToImagePx', () => {
 
   it('maps the origin to the origin', () => {
     expect(ptToImagePx(0, 0, 1190, 595)).toEqual({ x: 0, y: 0 });
+  });
+});
+
+describe('imagePxToPt', () => {
+  it('is the exact inverse of ptToImagePx for the same imagePxWidth/pageWidthPt pair', () => {
+    const imagePxWidth = 1190;
+    const pageWidthPt = 595;
+    const original = { xPt: 123.4, yPt: 567.8 };
+    const { x, y } = ptToImagePx(original.xPt, original.yPt, imagePxWidth, pageWidthPt);
+    const roundTripped = imagePxToPt(x, y, imagePxWidth, pageWidthPt);
+    expect(roundTripped.xPt).toBeCloseTo(original.xPt, 10);
+    expect(roundTripped.yPt).toBeCloseTo(original.yPt, 10);
+  });
+
+  it('maps the origin to the origin', () => {
+    expect(imagePxToPt(0, 0, 1190, 595)).toEqual({ xPt: 0, yPt: 0 });
+  });
+
+  it('scales both axes by the same width-derived ratio (no independent Y scale/flip)', () => {
+    const imagePxWidth = 1785; // 3x scale
+    const pageWidthPt = 595;
+    const { xPt, yPt } = imagePxToPt(30, 60, imagePxWidth, pageWidthPt);
+    expect(xPt).toBe(10);
+    expect(yPt).toBe(20);
+  });
+});
+
+describe('imagePxSizeToPt', () => {
+  it('is the exact inverse of ptSizeToImagePx for the same imagePxWidth/pageWidthPt pair', () => {
+    const imagePxWidth = 1190;
+    const pageWidthPt = 595;
+    const original = { wPt: 42.5, hPt: 18.25 };
+    const { wPx, hPx } = ptSizeToImagePx(original.wPt, original.hPt, imagePxWidth, pageWidthPt);
+    const roundTripped = imagePxSizeToPt(wPx, hPx, imagePxWidth, pageWidthPt);
+    expect(roundTripped.wPt).toBeCloseTo(original.wPt, 10);
+    expect(roundTripped.hPt).toBeCloseTo(original.hPt, 10);
+  });
+
+  it('maps a zero size to a zero size', () => {
+    expect(imagePxSizeToPt(0, 0, 1190, 595)).toEqual({ wPt: 0, hPt: 0 });
   });
 });
 

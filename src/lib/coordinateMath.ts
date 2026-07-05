@@ -73,6 +73,48 @@ export function ptToImagePx(
 }
 
 /**
+ * Converts a background-image pixel position back to PDF points - the inverse of
+ * `ptToImagePx`, needed because OCR (`text-recognition` module) runs directly on the
+ * rasterized background image and reports bounding boxes in that image's pixel space, but
+ * every stored `Edit`-adjacent value in this app (including `OcrLine`) is kept in PDF points
+ * like everything else, converting to dp/px only at the point of use (see this file's
+ * module docstring).
+ *
+ * @param xPx Horizontal position, in background-image px, relative to the image's left edge.
+ * @param yPx Vertical position, in background-image px, relative to the image's top edge.
+ * @param imagePxWidth Width of the rendered background image, in px.
+ * @param pageWidthPt Width of the source PDF page, in points.
+ */
+export function imagePxToPt(
+  xPx: number,
+  yPx: number,
+  imagePxWidth: number,
+  pageWidthPt: number,
+): { xPt: number; yPt: number } {
+  const scale = pageWidthPt / imagePxWidth;
+  return { xPt: xPx * scale, yPt: yPx * scale };
+}
+
+/**
+ * Converts a background-image pixel size (width/height) back to PDF points - the inverse of
+ * `ptSizeToImagePx`. See `imagePxToPt`'s docstring for why OCR needs this conversion.
+ *
+ * @param wPx Width, in background-image px.
+ * @param hPx Height, in background-image px.
+ * @param imagePxWidth Width of the rendered background image, in px.
+ * @param pageWidthPt Width of the source PDF page, in points.
+ */
+export function imagePxSizeToPt(
+  wPx: number,
+  hPx: number,
+  imagePxWidth: number,
+  pageWidthPt: number,
+): { wPt: number; hPt: number } {
+  const { xPt: wPt, yPt: hPt } = imagePxToPt(wPx, hPx, imagePxWidth, pageWidthPt);
+  return { wPt, hPt };
+}
+
+/**
  * Converts a drawn selection's size (dp) to PDF points - `MaskOverlay.tsx`'s drag-to-select
  * gesture reports a rectangle's width/height in dp, which must be stored in points like every
  * other `Edit` field (spec Section 7). A size has no origin to offset against, unlike a
