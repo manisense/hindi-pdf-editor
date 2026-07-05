@@ -62,10 +62,10 @@ Every package below was checked for current maintenance status and Expo SDK comp
 |---|---|---|---|
 | App framework | Expo (custom dev client — `expo prebuild` / `expo-dev-client`), **not** Expo Go, **not** bare RN CLI | SDK 56 (React Native 0.85, React 19.2) | `expo-print` is first-party; `react-native-pdf` and `react-native-pdf-page-image` are native modules Expo Go can't load. SDK 56 over the newer SDK 57 (released within days of this check) for stability — zero-budget solo build, no bandwidth to firefight bleeding-edge SDK issues. **New Architecture is mandatory on this SDK** — Legacy Architecture was removed from React Native entirely as of 0.82, so every native module below must run under Fabric/TurboModules, either natively or via RN's Legacy Interop Layer. |
 | PDF viewing | `react-native-pdf` + `react-native-blob-util` | 7.0.4 | Displays the source PDF for browsing/page navigation. Actively maintained (Mar 2026). Has documented Fabric/New-Architecture blank-view issues on **iOS**; irrelevant here since v1 is Android-only. Android rendering path is stable. |
-| PDF page → image | `react-native-pdf-page-image` | 0.1.5 | Uses PDFKit (iOS) / `PdfRenderer` (Android) natively to rasterize a specific page to PNG, with a `scale` parameter matching Section 8's resolution requirement. **Caveat:** last published Sept 2024, small (16-star) project — see Section 4.2 for the required validation step and fallback plan. Do not treat this row as settled until Phase 0's new checklist item (Section 10) passes. |
+| PDF page → image | `react-native-pdf-page-image` | 0.2.1 (actually installed; superseded the 0.1.5 originally checked in July 2026 — see note below) | Uses PDFKit (iOS) / `PdfRenderer` (Android) natively to rasterize a specific page to PNG, with a `scale` parameter matching Section 8's resolution requirement. **Caveat:** confirmed (per its own README, checked at install time) that 0.2.1 is still not explicitly built for React Native's New Architecture — see Section 4.2 for the required validation step and fallback plan. Do not treat this row as settled until Phase 0's checklist item (Section 10) passes. |
 | HTML → PDF export | `expo-print` (`Print.printToFileAsync`) | matches SDK 56 | First-party, WebView-based, routes through Android's real print framework. If Phase 0's spike shows meaningfully better selectability or page-break behavior from `react-native-html-to-pdf` instead, swap it in — same architectural slot, don't rebuild around it. |
 | Existing-PDF metadata (page size, font inspection) | `@cantoo/pdf-lib` | 2.7.1 | Maintained, API-compatible fork of `pdf-lib`. The original `pdf-lib` (Hopding) is effectively unmaintained — no response to issues/PRs since 2023–2024 — and the ecosystem (including projects like Stirling-PDF) has migrated to this fork. Read-only use here: `PDFDocument.load()`, `getPage(i).getSize()`, and font-dictionary inspection for Section 9's legacy-font detector. Not used for drawing Devanagari text. |
-| Devanagari font | Noto Sans Devanagari + Noto Serif Devanagari, Regular + Bold `.ttf`, bundled as app assets | latest from Noto Fonts (OFL license) | Free, open, complete Devanagari OpenType coverage. |
+| Devanagari font | Noto Sans Devanagari + Noto Serif Devanagari, **variable fonts** (`wght`/`wdth` axes, Thin–Black in one file per family), bundled as app assets | latest from the `google/fonts` repo (OFL license) | Free, open, complete Devanagari OpenType coverage. A variable font was used instead of separate static Regular/Bold files because that's what's actually published for these two families now — one `@font-face` per family, with `font-weight: 100 900`, covers every weight Chromium needs; no separate Bold file to keep in sync. |
 | Edit state | `zustand` | 5.0.14 | Not the hard part of this app — minimal API, no boilerplate. |
 | Open PDF from device storage | `expo-document-picker` | matches SDK 56 | First-party file picker; needed for Phase 1's "open an existing PDF from device storage." |
 | Font/asset base64 loading | `expo-asset` + `expo-file-system` | matches SDK 56 | Backs `fontAsset.ts` — loads and base64-encodes the bundled font once. |
@@ -75,13 +75,27 @@ Every package below was checked for current maintenance status and Expo SDK comp
 | Lint/format | `eslint` (`eslint-config-expo`) + `prettier` | latest | Run before considering any checklist item done. |
 | Language | TypeScript, strict mode | — | No `any` without a one-line justifying comment. |
 
-### 4.2 The one unresolved dependency risk
+### 4.2 The one unresolved dependency risk — now confirmed, not just theoretical
 
 `react-native-pdf-page-image` is the least-replaceable, least-maintained package in this stack. It's a pure `NativeModule` (no rendered view — lower New Architecture interop risk than a Fabric UI component like a PDF viewer, but not zero risk). Two newer alternatives exist (`@dariyd/react-native-pdf-page-image`, `expo-pdf-to-image`), but both are single-maintainer projects published within months of this check with no track record, and `expo-pdf-to-image` doesn't even expose the scale/DPI parameter this spec's resolution requirement needs. None of the three is a safe blind pick.
 
-**Resolution: fold this into Phase 0.** Before Phase 1 starts, confirm `react-native-pdf-page-image` actually links, builds, and renders correctly under Expo SDK 56's mandatory New Architecture on a real Android build (see the added checklist item in Section 10).
+**Update (scaffold verification, July 2026): confirmed broken as of `react-native-pdf-page-image@0.2.1` on this stack.** Running `./gradlew assembleDebug` on the freshly prebuilt Android project fails during dependency resolution, before New Architecture linking is even reached:
 
-**If it fails:** don't reach for `@dariyd/react-native-pdf-page-image` or `expo-pdf-to-image` as an automatic next step — vet whichever is tried the same way this section vets everything else. The more robust fallback is a thin, in-house Expo Module (Kotlin, via the Expo Modules API) wrapping `android.graphics.pdf.PdfRenderer` directly — roughly 80 lines, full control over the render scale matrix, zero third-party dependency for the single most fragile piece of the pipeline. `PdfRenderer` is a stable, first-party Android API; this isn't a shortcut around Section 2's shaping rule — it only rasterizes a background image, exactly like the library it would replace.
+```
+A problem occurred configuring project ':react-native-pdf-page-image'.
+> Could not resolve all artifacts for configuration 'classpath'.
+   > Could not download kotlin-stdlib-1.3.50.jar (org.jetbrains.kotlin:kotlin-stdlib:1.3.50)
+      > The server may not support the client's requested TLS protocol versions: (TLSv1.2, TLSv1.3).
+         Remote host terminated the handshake
+```
+
+Root cause: the module's own `android/build.gradle` declares an isolated `buildscript {}` block pinning `com.android.tools.build:gradle:3.5.4` (Android Gradle Plugin from 2019/2020) and an old Kotlin Gradle plugin, resolved independently of the root project's toolchain. That old tooling's bundled HTTP client can't complete a modern TLS handshake against Maven Central under Gradle 9.x / JDK 17 — confirmed *not* a transient network issue, since a plain `curl` to the same Maven Central URL succeeds instantly (TLS 1.3, HTTP 200) from the same machine at the same time. This is a direct, concrete consequence of the package's staleness (last published without touching this file since well before this build toolchain existed), exactly the failure mode this section was written to anticipate.
+
+**Resolution:** per this section's own prior guidance, do not silently reach for `@dariyd/react-native-pdf-page-image` or `expo-pdf-to-image` as an automatic next step. Two real options remain open, in order of effort:
+1. **Patch the dependency** (e.g. via `patch-package`) to remove its redundant isolated `buildscript {}` block entirely — the root project's own Kotlin/AGP toolchain already provides everything this module needs; the module's own `buildscript {}` block is legacy boilerplate from an old `create-react-native-library` template and isn't actually required for a modern RN/Expo autolinked build. Cheap if it works, but is exactly the kind of unmaintained-dependency patching this section warned against depending on long-term.
+2. **Implement the fallback**: a thin, in-house Expo Module (Kotlin, via the Expo Modules API) wrapping `android.graphics.pdf.PdfRenderer` directly — roughly 80 lines, full control over the render scale matrix, zero third-party dependency for the single most fragile piece of the pipeline. `PdfRenderer` is a stable, first-party Android API; this isn't a shortcut around Section 2's shaping rule — it only rasterizes a background image, exactly like the library it would replace.
+
+This is a decision point, not something to resolve unilaterally mid-scaffold — see Section 10's Phase 0 checklist, which now reflects this confirmed result instead of an open question.
 
 ### 4.3 Explicitly excluded
 
@@ -144,7 +158,9 @@ Live editing and export both ultimately depend on the same underlying HarfBuzz-b
   /state
     editStore.ts             // DocumentState / PageState / Edit, see Section 8
   /assets/fonts
-    NotoSansDevanagari-Regular.ttf
+    NotoSansDevanagari-Variable.ttf   // wght 100-900, wdth axis
+    NotoSerifDevanagari-Variable.ttf  // wght 100-900, wdth axis
+    OFL.txt                           // license, ships with the fonts
 App.tsx
 ```
 
@@ -271,7 +287,7 @@ Prove the core architectural assumption before writing app code. This phase now 
 - [ ] Export via `Print.printToFileAsync`.
 - [ ] Open the resulting PDF in at least two different viewers (e.g. Google Drive's built-in viewer and Adobe Acrobat Reader).
 - [ ] **Record the result in writing**: do conjuncts render as single joined glyphs (pass) or disconnected pieces (fail — stop and re-evaluate)? Is the text selectable, or does it behave like a flattened image? (Either is an acceptable *pass* for this app's stated requirements — selectability is a bonus, not a requirement — but record which one you got.)
-- [ ] **Separately**, install `react-native-pdf-page-image` in the same custom dev client project and confirm it links, builds, and rasterizes a real PDF page on an actual Android build under Expo SDK 56's mandatory New Architecture (see Section 4.2 for why this isn't assumed to just work). If it fails to link or build, stop and implement the Section 4.2 fallback (in-house `PdfRenderer`-based Expo Module) before starting Phase 1 — do not silently substitute a different unvetted third-party package.
+- [x] **Separately**, install `react-native-pdf-page-image` in the same custom dev client project and confirm it links, builds, and rasterizes a real PDF page on an actual Android build under Expo SDK 56's mandatory New Architecture (see Section 4.2 for why this isn't assumed to just work). **Result: FAILED at `./gradlew assembleDebug`**, before New Architecture linking is even reached — see Section 4.2 for the confirmed root cause (an isolated, ancient AGP/Kotlin buildscript block inside the package itself, incompatible with the current Gradle/JDK TLS stack). Per this same checklist item's original instruction: do not silently substitute a different unvetted third-party package. Next action is an explicit decision between patching the dependency (`patch-package`) or implementing the Section 4.2 in-house `PdfRenderer` fallback — not yet made as of this writing.
 
 ### Phase 1 — MVP: single-page edit and export
 - [ ] Open an existing PDF from device storage via `react-native-pdf`.
@@ -311,4 +327,5 @@ A vector-preserving, smaller-diff alternative export path: `@cantoo/pdf-lib` (se
 Be aware of these; validate them yourself rather than assuming either outcome:
 - **Text selectability of `expo-print`/`react-native-html-to-pdf` output varies by library version and wasn't confirmed either way for current versions** — Phase 0 must record which you got. It does not block shipping either way, since selectability was never a stated hard requirement — correct, unbroken Devanagari rendering is the requirement, and that holds regardless.
 - **Very large documents (100+ pages) exported in a single print call** may be slow or memory-heavy on low-end Android hardware. If this becomes a real problem, export in batches of a few pages and merge the resulting PDFs with `@cantoo/pdf-lib`'s page-copying (`copyPages`), which is cheap and doesn't touch text rendering at all — do this only if you actually hit the problem, not preemptively.
-- **Versions are now pinned (Section 4.1, checked July 2026):** Expo SDK 56, `react-native-pdf` 7.0.4, `expo-print` matching SDK 56, `@cantoo/pdf-lib` 2.7.1. What research couldn't resolve without an actual build is whether `react-native-pdf-page-image` behaves correctly under React Native's now-mandatory New Architecture — Section 4.2 explains the risk and Section 10's Phase 0 now gates on it explicitly, with a documented fallback if it fails. Re-check this table before starting a build far in the future.
+- **Versions are now pinned (Section 4.1, checked July 2026):** Expo SDK 56, `react-native-pdf` 7.0.4, `expo-print` matching SDK 56, `@cantoo/pdf-lib` 2.7.1. Re-check this table before starting a build far in the future.
+- **`react-native-pdf-page-image` is confirmed broken on this toolchain, not just theoretically risky.** A real `./gradlew assembleDebug` run failed during the package's own buildscript resolution (Section 4.2 has the full error and root cause). This was caught during initial project scaffolding, before Phase 1 began — exactly what Section 10's Phase 0 checklist item was written to catch. Resolving this (patch vs. in-house fallback) is a pending decision, not yet made.
