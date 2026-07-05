@@ -24,6 +24,12 @@ All notable changes to this project are documented here, grouped by phase (see `
 - **Verified in this session:** `npx expo-modules-autolinking resolve -p android` now lists `pdf-page-image`; a clean (non-cached) `./gradlew :pdf-page-image:assembleDebug` and `:app:assembleDebug` both report `BUILD SUCCESSFUL`. This is the first time the full app has actually compiled end-to-end.
 - **Not yet verified:** whether the module correctly rasterizes a real PDF page at runtime — no Android emulator or physical device was available in this environment. Build success proves compilation and linking, not runtime correctness. This remains an open Phase 0 checklist item (spec Section 10) and gates the start of Phase 1.
 
+### Added — Phase 0 spike code
+- `src/lib/fontAsset.ts`: loads a bundled Devanagari variable font via `expo-asset` + `expo-file-system` and returns it base64-encoded, memoized per session (spec Section 8).
+- `App.tsx`: the actual Phase 0 spike screen — hardcoded Devanagari HTML (same sentences as `fixtures/devanagari-fixture.html`: conjuncts क्ष/ज्ञ/त्र/द्य, a reph, matras above and below baseline), base64 `@font-face` embedding, `Print.printToFileAsync` export, and `expo-sharing` to hand the result to an external viewer.
+- Verified in this session: `tsc --noEmit`, `eslint .`, and `prettier --check` all pass; `npx expo export --platform android` bundles cleanly (592 modules, both font assets included at their expected sizes) — confirms Metro resolves every import, including the local `pdf-page-image` module's JS side and the `.ttf` asset `require()`s.
+- **Not yet verified:** whether running this on a device actually produces a correctly-shaped Devanagari PDF, and whether the exported file opens correctly in two independent PDF viewers — no Android emulator or physical device was available in this environment. This is the actual point of Phase 0 and is unfinished until someone runs it on real hardware and records the result per spec Section 10.
+
 <!--
 Template for each future phase, add above this line as phases complete:
 
