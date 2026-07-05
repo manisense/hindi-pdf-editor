@@ -20,7 +20,8 @@
       "expo-status-bar",
       "expo-asset",
       "expo-sharing",
-      "expo-font"
+      "expo-font",
+      "expo-secure-store"
     ]
   }
 }
