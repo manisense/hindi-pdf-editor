@@ -136,13 +136,24 @@ class PdfPageImageModule : Module() {
   }
 
   /**
-   * Averages the pixels in a band `marginPx` wide surrounding (xPx, yPx, wPx, hPx), excluding
-   * the rectangle itself, to approximate the page's background color right around a region the
-   * user is about to mask - not the color of the burned-in text inside the rectangle, which is
-   * exactly what masking is trying to hide. Decodes the whole background JPEG rather than only
-   * the needed band via `BitmapRegionDecoder`: these images are already bounded to 2-3x a
-   * page's point-dimensions per AGENTS.md's performance constraint (a few MB decoded), and this
-   * runs once per user-drawn mask, not in a hot loop, so the simpler full-decode is preferable.
+   * Finds the per-channel *median* (not mean) of the pixels in a band `marginPx` wide
+   * surrounding (xPx, yPx, wPx, hPx), excluding the rectangle itself, to approximate the page's
+   * background color right around a region the user is about to mask - not the color of the
+   * burned-in text inside the rectangle, which is exactly what masking is trying to hide.
+   *
+   * Median over mean: callers (`App.tsx`) already expand the caller-drawn rectangle by a small
+   * safety margin before calling this, specifically so the sampled band starts past the
+   * anti-aliased edge of the original text - but real documents still put JPEG ringing
+   * artifacts and the occasional stray dark pixel right at that boundary. A mean lets even a
+   * handful of such outliers visibly drag the fill color away from the true paper color (this
+   * was reported as "the mask box is still visible" against non-pure-white backgrounds); a
+   * median is unaffected by a minority of outliers as long as most of the sampled band is
+   * genuinely background, which it is by construction here.
+   *
+   * Decodes the whole background JPEG rather than only the needed band via
+   * `BitmapRegionDecoder`: these images are already bounded to 2-3x a page's point-dimensions
+   * per AGENTS.md's performance constraint (a few MB decoded), and this runs once per
+   * user-drawn mask, not in a hot loop, so the simpler full-decode is preferable.
    */
   private fun sampleAverageColor(
     uriString: String,
@@ -174,18 +185,20 @@ class PdfPageImageModule : Module() {
       val innerRight = (xPx + wPx).coerceIn(0, bitmap.width)
       val innerBottom = (yPx + hPx).coerceIn(0, bitmap.height)
 
-      var sumR = 0L
-      var sumG = 0L
-      var sumB = 0L
+      // Fixed-size (0-255) histograms, not a full pixel list - O(1) extra space per channel
+      // regardless of how large the sampled band is, while still supporting an exact median.
+      val histR = IntArray(256)
+      val histG = IntArray(256)
+      val histB = IntArray(256)
       var count = 0L
       for (y in outerTop until outerBottom) {
         val insideInnerRow = y in innerTop until innerBottom
         for (x in outerLeft until outerRight) {
           if (insideInnerRow && x in innerLeft until innerRight) continue
           val pixel = bitmap.getPixel(x, y)
-          sumR += Color.red(pixel)
-          sumG += Color.green(pixel)
-          sumB += Color.blue(pixel)
+          histR[Color.red(pixel)]++
+          histG[Color.green(pixel)]++
+          histB[Color.blue(pixel)]++
           count++
         }
       }
@@ -195,11 +208,21 @@ class PdfPageImageModule : Module() {
       // than divide by zero or crash.
       if (count == 0L) return "#ffffff"
 
+      fun medianOf(histogram: IntArray): Int {
+        val half = count / 2
+        var runningCount = 0L
+        for (value in 0..255) {
+          runningCount += histogram[value]
+          if (runningCount > half) return value
+        }
+        return 255
+      }
+
       return String.format(
         "#%02x%02x%02x",
-        (sumR / count).toInt(),
-        (sumG / count).toInt(),
-        (sumB / count).toInt()
+        medianOf(histR),
+        medianOf(histG),
+        medianOf(histB)
       )
     } finally {
       bitmap.recycle()

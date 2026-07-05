@@ -84,6 +84,13 @@ const RASTER_SCALE = 2;
 // pick its fill color (Phase 3, spec Section 8) - a few points' worth at RASTER_SCALE, enough
 // to average past a little JPEG noise without reaching into an unrelated neighboring text line.
 const MASK_SAMPLE_MARGIN_PX = 16;
+// Safety margin, in PDF points, added around a user-drawn mask rectangle before it's stored and
+// sampled. A box drawn exactly to the visible edge of the original text still leaves its
+// anti-aliased/JPEG-ringing pixels just outside that edge unmasked - a thin sliver of the old
+// glyph's outline, which is exactly the "I can still see a box" symptom this fixes. The
+// replacement TextEdit is still anchored at the un-expanded drag point, so this only grows mask
+// coverage, not the text's apparent position.
+const MASK_EXPAND_PT = 3;
 
 type Status =
   | { state: 'idle' }
@@ -209,8 +216,32 @@ export default function App() {
     // Same fail-closed rule as `handleTap` above - `MaskOverlay`'s `active` prop is also gated
     // on `!editingBlocked` so this shouldn't normally fire, but this stays as a second guard.
     if (!page || editingBlocked) return;
-    const { x: xPx, y: yPx } = ptToImagePx(rect.xPt, rect.yPt, page.imagePxWidth, page.widthPt);
-    const { wPx, hPx } = ptSizeToImagePx(rect.wPt, rect.hPt, page.imagePxWidth, page.widthPt);
+
+    // Grow the raw drag rectangle by MASK_EXPAND_PT before it's used for anything, clamped to
+    // the page - see that constant's docstring for why.
+    const maskRect = {
+      xPt: Math.max(0, rect.xPt - MASK_EXPAND_PT),
+      yPt: Math.max(0, rect.yPt - MASK_EXPAND_PT),
+      wPt:
+        Math.min(page.widthPt, rect.xPt + rect.wPt + MASK_EXPAND_PT) -
+        Math.max(0, rect.xPt - MASK_EXPAND_PT),
+      hPt:
+        Math.min(page.heightPt, rect.yPt + rect.hPt + MASK_EXPAND_PT) -
+        Math.max(0, rect.yPt - MASK_EXPAND_PT),
+    };
+
+    const { x: xPx, y: yPx } = ptToImagePx(
+      maskRect.xPt,
+      maskRect.yPt,
+      page.imagePxWidth,
+      page.widthPt,
+    );
+    const { wPx, hPx } = ptSizeToImagePx(
+      maskRect.wPt,
+      maskRect.hPt,
+      page.imagePxWidth,
+      page.widthPt,
+    );
 
     let color = '#ffffff';
     try {
@@ -230,10 +261,10 @@ export default function App() {
     }
 
     addMaskEdit(currentPageIndex, {
-      xPt: rect.xPt,
-      yPt: rect.yPt,
-      wPt: rect.wPt,
-      hPt: rect.hPt,
+      xPt: maskRect.xPt,
+      yPt: maskRect.yPt,
+      wPt: maskRect.wPt,
+      hPt: maskRect.hPt,
       color,
     });
 
