@@ -31,6 +31,12 @@ All notable changes to this project are documented here, grouped by phase (see `
 - Verified in this session: `tsc --noEmit`, `eslint .`, and `prettier --check` all pass; `npx expo export --platform android` bundles cleanly (592 modules, both font assets included at their expected sizes) — confirms Metro resolves every import, including the local `pdf-page-image` module's JS side and the `.ttf` asset `require()`s.
 - **Not yet verified:** whether running this on a device actually produces a correctly-shaped Devanagari PDF, and whether the exported file opens correctly in two independent PDF viewers — no Android emulator or physical device was available in this environment. This is the actual point of Phase 0 and is unfinished until someone runs it on real hardware and records the result per spec Section 10.
 
+### Added — `coordinateMath.ts` (pure, device-independent groundwork done ahead of Phase 1)
+- Implemented `dpToPt`, `ptToDp`, `ptToImagePx` exactly per spec Section 8: three linear scale conversions between dp/pt/px, top-left origin throughout, single width-derived scale applied to both axes.
+- Added 11 unit tests covering identity cases, the dp↔pt round trip, the spec's own A4-at-2x worked example, and that both axes scale uniformly (no accidental Y-flip or independent axis scaling) — this is the module AGENTS.md flags as having "no excuse" to ship untested, since a sign/scale error here silently misplaces every edit without a compile error.
+- **Fixed a pre-existing gap found while adding the first test file in this repo:** `@types/jest` was installed but never actually loaded by `tsc` (`describe`/`it`/`expect` resolved as unknown globals despite the package being present) — root `tsconfig.json` had no `types` array, and this project's `moduleResolution: "bundler"` setup wasn't implicitly picking up ambient `@types/*` packages the way a default `node`-style resolution would. Added `"types": ["jest"]` to `tsconfig.json`. Confirmed fix with a full-project `tsc --noEmit`, `eslint .`, and `jest` run, all clean.
+- This work does not touch anything requiring a device and does not start Phase 1 — it's pure-function groundwork the Phase 1 checklist items (`EditableTextOverlay.tsx`, `htmlCompositor.ts`) will import once Phase 0's device-verification gate (see above) is cleared.
+
 <!--
 Template for each future phase, add above this line as phases complete:
 

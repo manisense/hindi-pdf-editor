@@ -1,0 +1,68 @@
+import { dpToPt, ptToDp, ptToImagePx } from './coordinateMath';
+
+describe('dpToPt', () => {
+  it('is identity when the view is displayed at 1:1 with the page', () => {
+    expect(dpToPt(100, 200, 595, 595)).toEqual({ xPt: 100, yPt: 200 });
+  });
+
+  it('scales down when the on-screen view is larger than the page (dp > pt)', () => {
+    // View is 2x the page's point-width -> 1dp covers half as many points.
+    expect(dpToPt(200, 400, 1190, 595)).toEqual({ xPt: 100, yPt: 200 });
+  });
+
+  it('scales up when the on-screen view is smaller than the page (dp < pt)', () => {
+    // View is half the page's point-width -> 1dp covers twice as many points.
+    expect(dpToPt(50, 100, 297.5, 595)).toEqual({ xPt: 100, yPt: 200 });
+  });
+
+  it('maps the origin to the origin', () => {
+    expect(dpToPt(0, 0, 400, 595)).toEqual({ xPt: 0, yPt: 0 });
+  });
+});
+
+describe('ptToDp', () => {
+  it('is identity when the view is displayed at 1:1 with the page', () => {
+    expect(ptToDp(100, 200, 595, 595)).toEqual({ xDp: 100, yDp: 200 });
+  });
+
+  it('is the exact inverse of dpToPt for the same viewWidthDp/pageWidthPt pair', () => {
+    const viewWidthDp = 360;
+    const pageWidthPt = 595;
+    const original = { xDp: 123.4, yDp: 567.8 };
+    const { xPt, yPt } = dpToPt(original.xDp, original.yDp, viewWidthDp, pageWidthPt);
+    const roundTripped = ptToDp(xPt, yPt, viewWidthDp, pageWidthPt);
+    expect(roundTripped.xDp).toBeCloseTo(original.xDp, 10);
+    expect(roundTripped.yDp).toBeCloseTo(original.yDp, 10);
+  });
+
+  it('maps the origin to the origin', () => {
+    expect(ptToDp(0, 0, 400, 595)).toEqual({ xDp: 0, yDp: 0 });
+  });
+});
+
+describe('ptToImagePx', () => {
+  it('is identity when the background image is rendered at 1px per point', () => {
+    expect(ptToImagePx(100, 200, 595, 595)).toEqual({ x: 100, y: 200 });
+  });
+
+  it('matches the spec example: an A4 page (595x842pt) rendered at 2x scale', () => {
+    // A point at the exact center of the page should land at the center of the 2x image.
+    const pageWidthPt = 595;
+    const imagePxWidth = 1190; // 595pt * 2
+    const { x, y } = ptToImagePx(pageWidthPt / 2, 842 / 2, imagePxWidth, pageWidthPt);
+    expect(x).toBeCloseTo(595, 10);
+    expect(y).toBeCloseTo(842, 10);
+  });
+
+  it('scales both axes by the same width-derived ratio (no independent Y scale/flip)', () => {
+    const pageWidthPt = 595;
+    const imagePxWidth = 1785; // 3x scale
+    const { x, y } = ptToImagePx(10, 20, imagePxWidth, pageWidthPt);
+    expect(x).toBe(30);
+    expect(y).toBe(60);
+  });
+
+  it('maps the origin to the origin', () => {
+    expect(ptToImagePx(0, 0, 1190, 595)).toEqual({ x: 0, y: 0 });
+  });
+});
