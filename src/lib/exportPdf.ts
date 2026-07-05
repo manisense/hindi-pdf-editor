@@ -14,39 +14,32 @@ import type { DocumentState } from '../state/editStore';
  * output file) - `Print.printToFileAsync` always writes to a fresh temp file on its own.
  *
  * @param doc Full in-memory document state (every page, edited or not - export always
- *   regenerates the whole document in one print call).
+ *   regenerates the whole document in one print call). `doc.pages[0].widthPt/heightPt` -
+ *   already the source PDF's real page size, computed once when the page was loaded/rasterized
+ *   (see `pdfToImages.ts`) - is reused here rather than re-reading the source file a second
+ *   time, so there is exactly one source of truth for page dimensions across the whole app,
+ *   not two independent reads that could theoretically disagree by rounding.
  * @param devanagariFontBase64 Base64 font data from `fontAsset.ts`'s `getFontBase64`, passed
  *   straight through to `documentHtml`.
  * @returns `file://` URI of the newly written PDF.
  */
 export async function exportPdf(doc: DocumentState, devanagariFontBase64: string): Promise<string> {
-  const { widthPt, heightPt } = await getSourcePageSizePt(doc.sourceUri);
+  const firstPage = doc.pages[0];
+  if (!firstPage) {
+    throw new Error('exportPdf: document has no pages');
+  }
   const html = documentHtml(doc, devanagariFontBase64);
 
   // expo-print's `width`/`height` are documented as "pixels" but are actually PDF points at
   // 72 PPI (its own default, 612x792, is exactly US Letter in points) - see spec Section 8.
-  const { uri } = await Print.printToFileAsync({ html, width: widthPt, height: heightPt });
+  const { uri } = await Print.printToFileAsync({
+    html,
+    width: firstPage.widthPt,
+    height: firstPage.heightPt,
+  });
 
   await assertNonEmptyAndReopenable(uri);
   return uri;
-}
-
-/**
- * Reads the source PDF's real page size (spec Section 7: the canonical unit every edit is
- * stored in), so export never hardcodes A4/Letter for a document that might be sized
- * differently. Uses page 0's size for the whole document, matching `documentHtml`'s single
- * `width`/`height` print option (per-page sizing would require one `printToFileAsync` call
- * per page, out of scope until a real document actually needs mixed page sizes).
- */
-async function getSourcePageSizePt(
-  sourceUri: string,
-): Promise<{ widthPt: number; heightPt: number }> {
-  const base64 = await FileSystem.readAsStringAsync(sourceUri, {
-    encoding: FileSystem.EncodingType.Base64,
-  });
-  const pdfDoc = await PDFDocument.load(base64);
-  const { width, height } = pdfDoc.getPage(0).getSize();
-  return { widthPt: width, heightPt: height };
 }
 
 /**

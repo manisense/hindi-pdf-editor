@@ -50,17 +50,17 @@ beforeEach(() => {
 });
 
 describe('exportPdf', () => {
-  it('reads the source PDF page size and passes it (in points) to Print.printToFileAsync, not a hardcoded size', async () => {
-    const sourceBase64 = await makeFixturePdfBase64(400, 600);
+  it("passes the document's stored page size (in points) to Print.printToFileAsync, not a hardcoded size", async () => {
     const outputBase64 = await makeFixturePdfBase64(400, 600);
 
-    mockReadAsStringAsync.mockImplementation(async (uri: string) =>
-      uri === 'file:///fake/output.pdf' ? outputBase64 : sourceBase64,
-    );
+    mockReadAsStringAsync.mockResolvedValue(outputBase64);
     mockGetInfoAsync.mockResolvedValue({ exists: true, size: 1234 });
     mockPrintToFileAsync.mockResolvedValue({ uri: 'file:///fake/output.pdf' });
 
-    const result = await exportPdf(makeDocument(), 'ZmFrZS1mb250');
+    const result = await exportPdf(
+      makeDocument({ pages: [{ ...makeDocument().pages[0], widthPt: 400, heightPt: 600 }] }),
+      'ZmFrZS1mb250',
+    );
 
     expect(mockPrintToFileAsync).toHaveBeenCalledTimes(1);
     const call = mockPrintToFileAsync.mock.calls[0][0];
@@ -72,8 +72,8 @@ describe('exportPdf', () => {
   });
 
   it('never reads from or writes back to the original sourceUri as the output', async () => {
-    const sourceBase64 = await makeFixturePdfBase64(595, 842);
-    mockReadAsStringAsync.mockResolvedValue(sourceBase64);
+    const outputBase64 = await makeFixturePdfBase64(595, 842);
+    mockReadAsStringAsync.mockResolvedValue(outputBase64);
     mockGetInfoAsync.mockResolvedValue({ exists: true, size: 999 });
     mockPrintToFileAsync.mockResolvedValue({ uri: 'file:///cache/new-export-123.pdf' });
 
@@ -86,9 +86,13 @@ describe('exportPdf', () => {
     expect(result).toBe('file:///cache/new-export-123.pdf');
   });
 
+  it('throws if the document has no pages', async () => {
+    await expect(exportPdf(makeDocument({ pages: [] }), 'Zm9udA==')).rejects.toThrow(
+      /no pages/,
+    );
+  });
+
   it('throws if the output file does not exist after export', async () => {
-    const sourceBase64 = await makeFixturePdfBase64(400, 600);
-    mockReadAsStringAsync.mockResolvedValue(sourceBase64);
     mockGetInfoAsync.mockResolvedValue({ exists: false });
     mockPrintToFileAsync.mockResolvedValue({ uri: 'file:///fake/output.pdf' });
 
@@ -96,8 +100,6 @@ describe('exportPdf', () => {
   });
 
   it('throws if the output file exists but is empty', async () => {
-    const sourceBase64 = await makeFixturePdfBase64(400, 600);
-    mockReadAsStringAsync.mockResolvedValue(sourceBase64);
     mockGetInfoAsync.mockResolvedValue({ exists: true, size: 0 });
     mockPrintToFileAsync.mockResolvedValue({ uri: 'file:///fake/output.pdf' });
 
@@ -105,12 +107,7 @@ describe('exportPdf', () => {
   });
 
   it('throws if the output file cannot be re-parsed as a PDF (silent corruption guard)', async () => {
-    const sourceBase64 = await makeFixturePdfBase64(400, 600);
-    mockReadAsStringAsync.mockImplementation(async (uri: string) =>
-      uri === 'file:///fake/output.pdf'
-        ? Buffer.from('not a pdf').toString('base64')
-        : sourceBase64,
-    );
+    mockReadAsStringAsync.mockResolvedValue(Buffer.from('not a pdf').toString('base64'));
     mockGetInfoAsync.mockResolvedValue({ exists: true, size: 42 });
     mockPrintToFileAsync.mockResolvedValue({ uri: 'file:///fake/output.pdf' });
 
