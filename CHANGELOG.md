@@ -180,6 +180,16 @@ This is the actual point of Phase 0, and the reason it gated everything else. Bo
 
 - This is the last of the five build phases in spec Section 10 that were in scope for this build (Phase 5, direct glyph injection, remains explicitly deferred per AGENTS.md and was not started).
 
+## [Post-Phase 4] — Mask fill blending fix (Phase 3 quality issue found in real use)
+
+### Fixed — mask fill visibly mismatched non-white page backgrounds
+
+- Real-world use (not the canonical all-white `devanagari-fixture.pdf`) surfaced Phase 3's mask as a visibly distinct box against pages with an off-white/cream/textured background, rather than blending in as intended. Two compounding root causes, both fixed:
+  1. **`App.tsx`**: added a `MASK_EXPAND_PT` (3pt) safety margin, growing a user-drawn mask rectangle on all sides (clamped to the page) before it's stored or sampled. A box drawn exactly to the visible glyph edges still leaves their anti-aliased/JPEG-ringing pixels just outside it unmasked - a thin sliver of the original text bleeding through, which read as "the box is visible." The paired replacement `TextEdit` stays anchored at the original, un-expanded drag point.
+  2. **`PdfPageImageModule.kt`**: `sampleAverageColor` switched from a per-channel _mean_ to a per-channel _median_ (via a 256-bucket histogram - O(1) extra space regardless of sampled band size, not a stored pixel list). A mean is skewed by even a minority of outlier pixels right at the text/background boundary (exactly what margin (1) doesn't fully eliminate); a median isn't, as long as most of the sampled band is genuine background.
+- **Verified on-device**: generated a synthetic off-white "aged paper" test PDF on the fly (`@cantoo/pdf-lib`, solid off-white background + burned-in text; not committed to the repo - the canonical `devanagari-fixture.pdf` remains the one reused fixture per AGENTS.md), masked over its text, and confirmed in both the live preview and the pulled exported PDF (`pdftoppm` + a pixel-level scan for color-value jumps along a line through the masked region) that the fill is indistinguishable from the surrounding background - zero detected jumps, not just "visually close."
+- Native rebuild required (`:pdf-page-image:compileDebugKotlin` + `:app:assembleDebug`), same as the original Phase 3 native addition.
+
 <!--
 Template for each future phase, add above this line as phases complete:
 
