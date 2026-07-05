@@ -1,5 +1,8 @@
 import { Asset } from 'expo-asset';
-import * as FileSystem from 'expo-file-system';
+// expo-file-system's top-level `readAsStringAsync` is a stub that unconditionally throws
+// in this SDK version (confirmed on a real device, not just read from source) - the actual
+// implementation now lives under the `/legacy` subpath. See exportPdf.ts for the same fix.
+import * as FileSystem from 'expo-file-system/legacy';
 
 export type DevanagariFontFamily = 'NotoSansDevanagari' | 'NotoSerifDevanagari';
 

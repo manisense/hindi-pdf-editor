@@ -1,6 +1,9 @@
 import { PDFDocument } from '@cantoo/pdf-lib';
 import * as Print from 'expo-print';
-import * as FileSystem from 'expo-file-system';
+// expo-file-system's top-level `readAsStringAsync`/`getInfoAsync` are stubs that
+// unconditionally throw in this SDK version (confirmed on a real device - see CHANGELOG) -
+// the actual implementation now lives under the `/legacy` subpath.
+import * as FileSystem from 'expo-file-system/legacy';
 
 import { documentHtml } from './htmlCompositor';
 import type { DocumentState } from '../state/editStore';

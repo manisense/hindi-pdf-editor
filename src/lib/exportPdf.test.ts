@@ -5,7 +5,7 @@ const mockReadAsStringAsync = jest.fn<Promise<string>, [string, unknown?]>();
 const mockGetInfoAsync = jest.fn();
 const mockPrintToFileAsync = jest.fn();
 
-jest.mock('expo-file-system', () => ({
+jest.mock('expo-file-system/legacy', () => ({
   readAsStringAsync: (...args: [string, unknown?]) => mockReadAsStringAsync(...args),
   getInfoAsync: (...args: unknown[]) => mockGetInfoAsync(...args),
   EncodingType: { Base64: 'base64' },
