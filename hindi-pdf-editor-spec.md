@@ -1,6 +1,6 @@
 # Hindi PDF Editor — React Native Build Specification
 
-**Status:** Phase 0 spike passed, verified on a real physical Android device (Section 10) — both the Devanagari shaping bet and the in-house `pdf-page-image` rasterization module are now confirmed correct at runtime, not just compiling. Phase 1 (MVP editor) is unblocked and can begin. Tech stack finalized and version-pinned (Section 4) against package registries and Expo's compatibility matrix as of July 2026. This document is self-contained — it does not assume the reader has any other context. Hand this whole file to your coding agent as its primary brief.
+**Status:** Phase 0 and Phase 1 both passed, verified on a real physical Android device (Section 10). Phase 0 confirmed the Devanagari shaping bet and the in-house `pdf-page-image` rasterization module work at runtime, not just at compile time. Phase 1's full single-page edit-and-export loop (pick a PDF, tap to add Hindi text, live conjunct shaping, export, verify the output) is confirmed end-to-end, including a real on-device bug found and fixed along the way (background image encoding hung the print WebView when combined with Devanagari text - see Section 10). Phase 2 (multi-page support) is unblocked and can begin. Tech stack finalized and version-pinned (Section 4) against package registries and Expo's compatibility matrix as of July 2026. This document is self-contained — it does not assume the reader has any other context. Hand this whole file to your coding agent as its primary brief.
 
 ## 1. What we're building
 
@@ -39,9 +39,9 @@ All of the above either risk rasterizing text into an unselectable image, or req
 
 **Chosen approach: "Render & Print."** The app never computes PDF glyph coordinates itself. Instead:
 
-1. The specific PDF page being edited is rasterized to a high-resolution PNG using the OS's native PDF renderer (this becomes a background image).
+1. The specific PDF page being edited is rasterized to a high-resolution JPEG using the OS's native PDF renderer (this becomes a background image). PNG was the original choice here but is confirmed (Section 10, Phase 1) to hang Android's print WebView when a background this size is combined with real Devanagari text shaping through an embedded variable font - JPEG at quality 92 fixed this with no visible quality loss, since the bitmap has no meaningful alpha channel to begin with.
 2. User edits (new text, masked-and-replaced regions) are tracked as simple positioned data — never as PDF drawing instructions.
-3. At save/export time, an HTML document is assembled: one `<div>` per page, with the background PNG as `background-image` and the edits layered on top as absolutely-positioned `<span>`/`<div>` elements, using a real embedded Devanagari font.
+3. At save/export time, an HTML document is assembled: one `<div>` per page, with the background image as `background-image` and the edits layered on top as absolutely-positioned `<span>`/`<div>` elements, using a real embedded Devanagari font.
 4. This HTML is loaded into a WebView and exported to PDF via Android's native print pipeline (`WebView.createPrintDocumentAdapter()`), not by manually drawing onto a `Canvas`.
 5. Chromium's own HarfBuzz-backed text renderer does all Devanagari shaping during that render — correctly, because it's the same renderer Android already trusts everywhere else.
 
@@ -109,7 +109,7 @@ Root cause: the module's own `android/build.gradle` declares an isolated `builds
         |
         |  the in-house pdf-page-image module renders the page being edited
         v
-[Background PNG, 2-3x the page's point-dimensions]         [Live text edits]
+[Background JPEG, 2-3x the page's point-dimensions]        [Live text edits]
         |                                                    (native <TextInput>
         |                                                     overlay, tracked as
         |                                                     state — see Section 7)
@@ -142,7 +142,7 @@ Live editing and export both ultimately depend on the same underlying HarfBuzz-b
 ```
 /src
   /components
-    PdfPageViewer.tsx        // shows current page: PNG background + live overlays
+    PdfPageViewer.tsx        // shows current page: JPEG background + live overlays
     EditableTextOverlay.tsx  // the tap-to-edit TextInput
     MaskOverlay.tsx          // drag-to-select mask rectangle for "replace text" edits
     LegacyFontWarning.tsx    // banner shown when a page uses a non-Unicode legacy font
@@ -206,7 +206,7 @@ type PageState = {
   pageIndex: number;
   widthPt: number;
   heightPt: number;
-  backgroundImageUri: string;   // local file:// path to the rendered PNG
+  backgroundImageUri: string;   // local file:// path to the rendered JPEG
   imagePxWidth: number;
   imagePxHeight: number;
   edits: Edit[];
@@ -279,7 +279,7 @@ On document load, use `@cantoo/pdf-lib`'s `PDFDocument.load()` to enumerate embe
 On tap, spawns an absolutely-positioned, transparent-background `<TextInput>` at the tapped location, using the bundled Devanagari font family. Because this is a real native `TextInput`, Android's own text stack (HarfBuzz-backed since Android O) shapes Devanagari correctly live, with zero custom shaping code. On blur/submit, converts the `TextInput`'s dp position to points (`dpToPt`) and commits a `TextEdit` to `editStore`.
 
 ### `MaskOverlay.tsx`
-Lets the user drag out a rectangle over existing burned-in text they want to replace. On release: sample the average color of the pixels just outside the selected rectangle (from the background PNG) to use as the mask fill color, then commit a `MaskEdit` to `editStore`, followed immediately by spawning an `EditableTextOverlay` in the same region for the replacement text.
+Lets the user drag out a rectangle over existing burned-in text they want to replace. On release: sample the average color of the pixels just outside the selected rectangle (from the background image) to use as the mask fill color, then commit a `MaskEdit` to `editStore`, followed immediately by spawning an `EditableTextOverlay` in the same region for the replacement text.
 
 ## 9. Why the legacy-font check is not optional
 
@@ -300,12 +300,13 @@ Prove the core architectural assumption before writing app code. This phase vali
 - [x] **Resolved per ADR 0004**: built the in-house `pdf-page-image` local Expo Module instead of patching the broken dependency. Found and fixed a real linking gap (the module had no `package.json`, so it was never resolvable by npm or Expo's autolinking). **Confirmed in-session**: `npx expo-modules-autolinking resolve -p android` lists the module; a clean, non-cached `./gradlew :pdf-page-image:assembleDebug` and `:app:assembleDebug` both report `BUILD SUCCESSFUL`.
 - [x] **Runtime rasterization confirmed on the same physical device**: pushed `fixtures/devanagari-fixture.pdf` into the app's sandboxed cache dir (`adb push` to `/data/local/tmp` + `run-as cp`), called `getPageCount()` (returned `1`, correct) and `renderPage(uri, 0, 2)` (returned `pxWidth=1224 pxHeight=1584` — exactly 2× the fixture's 612×792pt US Letter page, confirming the scale math) through a temporary, uncommitted test button, then pulled the produced PNG off-device and visually confirmed it's a correct, undistorted rasterization of the actual fixture content (same headline text, same footer URL/timestamp, same Devanagari rendering as the print-pipeline PDF). `PdfRenderer.Page.render()` works correctly end-to-end on real hardware, not just in the build graph.
 
-### Phase 1 — MVP: single-page edit and export
-- [ ] Open an existing PDF from device storage via `react-native-pdf`.
-- [ ] Display page 1; tapping anywhere spawns a `TextInput` at that location.
-- [ ] Typing Hindi text shows correct live conjunct formation (native `TextInput` shaping).
-- [ ] "Save" triggers the full Section 5 pipeline for that page.
-- [ ] Resulting PDF, opened in a viewer, shows the typed text in the correct position with correct shaping.
+### Phase 1 — MVP: single-page edit and export — ✅ PASSED, verified on a real device
+- [x] Open an existing PDF from device storage. **Deviates from this checklist's original wording**: uses `expo-document-picker` + the in-house `pdf-page-image` rasterizer (`PdfPageViewer.tsx`), not `react-native-pdf`, for the actual edit canvas. Section 6's own module spec already defined `PdfPageViewer.tsx` as "PNG background + live overlays" - the Render & Print architecture needs the edit canvas to be the exact same rasterized image the export pipeline composites onto, not a second, independent PDF renderer that could disagree with it pixel-for-pixel. `react-native-pdf` stays installed for Phase 2's multi-page browsing, where its scrolling/navigation is the actual point - this was a stale checklist wording, not a build-time architecture change, so it's called out here rather than silently left inconsistent.
+- [x] Display page 1; tapping anywhere spawns a `TextInput` at that location. — `App.tsx`'s `handleTap` + `EditableTextOverlay.tsx`.
+- [x] Typing Hindi text shows correct live conjunct formation (native `TextInput` shaping). — confirmed on-device: typed via Gboard's Hindi transliteration layout, reph (धर्म) rendered correctly joined in the live overlay.
+- [x] "Save" triggers the full Section 5 pipeline for that page. — `saveAndExport` in `App.tsx` calls `exportPdf.ts`.
+- [x] Resulting PDF, opened in a viewer, shows the typed text in the correct position with correct shaping. — confirmed by pulling the exported PDF off-device and rendering it with `pdftoppm`: the "धर्म" edit appears at the tapped position with correct reph shaping, over the full-quality (2x scale) background.
+- **On-device bug found and fixed during this phase**: exporting a page with a real Devanagari text edit (custom variable font) together with a 2x-scale background image hung the `expo-print` WebView indefinitely - reproducible only with all three of {Devanagari text, the embedded variable font, and a base64-inlined PNG background} present together; each pair alone exported fine. Root-caused to the background image's encoding rather than its pixel dimensions: switching `pdf-page-image`'s native output from PNG to JPEG (quality 92, no visible quality loss - see `PdfPageImageModule.kt`) fixed the hang while keeping the full 2-3x raster scale the spec requires. See CHANGELOG for details.
 
 ### Phase 2 — Multi-page support
 - [ ] Page navigation (next/previous).
@@ -342,3 +343,4 @@ Be aware of these; validate them yourself rather than assuming either outcome:
 - **`react-native-pdf-page-image` was confirmed broken on this toolchain, not just theoretically risky** — caught during initial project scaffolding, before Phase 1 began, exactly what Section 10's Phase 0 checklist item was written to catch. Resolved per ADR 0004 (in-house `PdfRenderer` Expo Module, see Section 4.2).
 - **The in-house replacement module is confirmed to work at runtime, not just to build.** Phase 0's on-device run exercised `getPageCount()`/`renderPage()` against the repo's fixture PDF and pulled the resulting bitmap off-device for visual inspection — correct page count, correct pixel dimensions for the requested scale, correct visual content. Section 10's last open Phase 0 item is closed; Phase 1 is unblocked.
 - **`expo-file-system`'s top-level legacy methods (`readAsStringAsync`, `getInfoAsync`, etc.) throw unconditionally in the installed SDK version** — a real runtime bug, only caught by running on a real device, that every unit test's mocking had silently hidden. Any *new* code that needs these must import from `expo-file-system/legacy`, not the package root. Already fixed in `fontAsset.ts` and `exportPdf.ts`; grep for `from 'expo-file-system'` (without `/legacy`) before adding new file-system code.
+- **A background PNG at 2x scale, combined with Devanagari text through an embedded variable font, hung `expo-print`'s WebView indefinitely** — only caught on a real device with a real conjunct-and-reph fixture; none of the individual factors alone reproduced it. Fixed by switching the rasterizer's output format to JPEG (quality 92) instead of reducing scale, so the 2-3x quality requirement in Section 4.1/AGENTS.md still holds. If this class of hang reappears on a different image or a larger document, re-check whether it's still specifically the {complex-script-shaping + large-inlined-image} combination, or something new.

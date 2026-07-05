@@ -68,6 +68,27 @@ This is the actual point of Phase 0, and the reason it gated everything else. Bo
 - **`pdf-page-image` native module runtime rasterization: PASS.** Pushed `fixtures/devanagari-fixture.pdf` into the app's own sandboxed cache directory via `adb push` + `run-as cp`, exercised `getPageCount()` (returned `1`, correct) and `renderPage(uri, 0, 2)` (returned `pxWidth=1224 pxHeight=1584`, exactly 2× the fixture's 612×792pt page) through a temporary, uncommitted test button in `App.tsx` (reverted before committing — never part of the shipped app), then pulled the resulting PNG off-device and visually confirmed it's an undistorted, correct rasterization matching the source PDF's actual content.
 - Both results, plus the bug fix above, recorded in `hindi-pdf-editor-spec.md` Section 10's Phase 0 checklist and Section 12's risk list — Phase 0 is marked passed, and Phase 1 is unblocked.
 
+## [Phase 1] — MVP: single-page edit and export
+
+### Changed — `exportPdf.ts` single-source-of-truth for page size
+- Removed the second, independent read of the source PDF's page size via `@cantoo/pdf-lib`'s `getSize()`. `exportPdf` now reuses `doc.pages[0].widthPt/heightPt`, already computed once when the page was rasterized (`pdfToImages.ts`) — one source of truth for page dimensions, not two reads that could theoretically disagree by rounding. Updated `exportPdf.test.ts` to match.
+
+### Added — Phase 1 UI
+- `src/components/PdfPageViewer.tsx`: displays a page's rasterized background image scaled to the view's width, converts tap coordinates to PDF points via `coordinateMath.ts`, and accepts a `renderOverlays` render-prop so callers can layer live edit components on top without this component knowing what an "edit" is.
+- `src/components/EditableTextOverlay.tsx`: an absolutely-positioned, live `TextInput` bound to a `TextEdit`, using `ptToDp` for position/size and `expo-font`-loaded Devanagari fonts so the live view matches the exported PDF (WYSIWYG).
+- `App.tsx` rewritten from the Phase 0 spike into the real Phase 1 editor: `expo-document-picker` to open a PDF, `pdfToImages.ts` to rasterize page 1, tap-to-add-text-edit, live editing via the components above, and save/export/share via `exportPdf.ts` + `expo-sharing`.
+
+### Fixed — real bugs found only by running Phase 1 on a physical device
+- **Background image never appeared in the exported PDF.** `expo-print`'s WebView does not reliably resolve a local `file://` URL used as a CSS `background-image` (silently renders blank) — the same class of failure the font already had to work around in Phase 0, just not caught until an actual exported PDF was inspected rather than just the HTML string. Fixed by having `exportPdf.ts` read and base64-encode each page's background image and inline it as a `data:` URI, same as the font. `htmlCompositor.ts`'s `pageHtml`/`documentHtml` now take a ready-made data URL per page instead of a raw path.
+- **Export hung indefinitely (not just slow — multiple minutes with no completion) when a real Devanagari text edit was present together with the 2x-scale background image.** Reproduced and isolated on-device: background image alone (no text edits) exported in ~18s; ASCII text with the custom font and background exported in ~20s; Devanagari text with the custom font and background never completed. All three factors together were required to reproduce it - no pair alone did. Root-caused to the background image's *encoding*, not its pixel dimensions: switching the native rasterizer's output from PNG to JPEG (quality 92) in `PdfPageImageModule.kt` fixed the hang while keeping the full 2x raster scale — confirmed by re-running the same Devanagari export at full scale after the fix, completing in a few seconds. The bitmap has no meaningful alpha channel (already flattened to opaque white for transparent PDF regions before encoding), so JPEG loses nothing here. `pdfToImages.ts`, `exportPdf.ts`, `htmlCompositor.ts`, and all affected tests updated to reflect JPEG rather than PNG as the background format.
+
+### Verified — Phase 1 passed on a real physical Android device (spec Section 10)
+- Opened `fixtures/devanagari-fixture.pdf` via the document picker; page rendered correctly at full 2x scale.
+- Tapped the page to add a text edit; typed via Gboard's Hindi transliteration keyboard; the live `EditableTextOverlay` showed "धर्म" with correct reph shaping in real time.
+- Tapped Save; export completed in a few seconds (previously hung indefinitely at this same scale before the JPEG fix above).
+- Pulled the exported PDF off-device (`adb exec-out run-as <pkg> cat <cache-path>`) and rendered it with `pdftoppm` at both 150dpi and 300dpi: the background page (full quality, no visible JPEG artifacts even on the fixture's smallest annotation text under magnification) and the "धर्म" overlay both render correctly, with the overlay positioned exactly where it was tapped and shaped correctly.
+- Full suite clean after all changes: `tsc --noEmit`, `eslint .`, `jest` (67/67 tests, 5 suites).
+
 <!--
 Template for each future phase, add above this line as phases complete:
 
