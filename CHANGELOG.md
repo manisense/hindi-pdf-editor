@@ -220,6 +220,13 @@ Driven by real use on a scanned bilingual form: Phase 3's drag-to-mask works but
 - Real scanned bilingual government leave form (2 pages, Hindi + English, no text layer): highlights on both scripts; tapped the Hindi title "छुट्टी की अर्जी का फॉर्म" → original scanned ink masked seamlessly, pre-filled editable input in its exact place with correct live shaping; appended "2026" via keyboard; exported; pulled the PDF — parse-back check passed (2 pages, 612×792, 446KB) and `pdftoppm` shows the edited title cleanly shaped in place with no leftover slivers.
 - Native rebuild required (new module: `:text-recognition:assembleDebug` + `:app:assembleDebug`, then reinstall); `npx expo-modules-autolinking resolve -p android` confirmed the module resolves. All 100 Jest tests, `tsc --noEmit`, `eslint .`, and `prettier --check` pass.
 
+### Added — opt-in "Enhance with AI" cloud OCR (Gemini free tier)
+
+- `src/lib/geminiOcr.ts`: sends one page image to the Gemini API (`gemini-3-flash-preview` — the strongest model with an API free tier as of July 2026, verified against ai.google.dev) prompting for line-level OCR with `box_2d` boxes in the model's native [ymin,xmin,ymax,xmax] 0-1000 format. The response parser is a separate pure function (9 unit tests: per-axis descaling, markdown-fence tolerance, multi-part joins, and fail-closed throws on malformed/non-JSON/API-error payloads — a wrong-but-plausible OCR box silently corrupts what the user sees, an error doesn't). Returns the same px-space `RecognizedLine[]` contract as the native module, so `ocr.ts`'s shared px→pt funnel (`toOcrLines`, extracted this change) keeps every downstream consumer engine-agnostic.
+- `src/lib/apiKeyStore.ts`: the user's own Gemini key (free, no credit card) in Android Keystore-backed encrypted storage via `expo-secure-store` (first-party, SDK-pinned `~56.0.4`, native rebuild required and done).
+- `App.tsx`: "Enhance with AI (sends this page to Google)" button — the explicit label and the one-time key prompt's privacy note exist because this is the single code path where document content leaves the device; it never runs automatically. On success the page's `ocrLines` are replaced with the cloud result. An "API key not valid" rejection auto-clears the stored key so the next press re-prompts instead of failing forever.
+- **Verified on-device (error path)**: fake key entered → real endpoint returned "API key not valid" → surfaced in an alert, key auto-cleared, next press re-prompted. **Success path not verified — requires the user's own API key**; stated per AGENTS.md rather than assumed. All 109 Jest tests, `tsc`, `eslint`, `prettier` pass.
+
 <!--
 Template for each future phase, add above this line as phases complete:
 
