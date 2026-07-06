@@ -274,6 +274,73 @@ describe('editStore', () => {
     expect(() => store.getState().setOcrLines(5, [])).toThrow();
   });
 
+  it('undo restores the document to the last checkpoint, reverting a multi-edit group', () => {
+    const store = makeStore();
+    store.getState().loadDocument(makeDocument());
+    const line = { id: 'ocr-1', text: 'पद', xPt: 10, yPt: 20, wPt: 50, hPt: 12 };
+    store.getState().setOcrLines(0, [line]);
+
+    // One user gesture = one checkpoint, then several low-level mutations.
+    store.getState().checkpoint();
+    store.getState().setOcrLines(0, []);
+    store.getState().addMaskEdit(0, { xPt: 10, yPt: 20, wPt: 50, hPt: 12, color: '#fff' });
+    store.getState().addTextEdit(0, {
+      xPt: 10,
+      yPt: 20,
+      fontSizePt: 12,
+      text: 'पद',
+      color: '#000',
+      fontFamily: 'NotoSansDevanagari',
+    });
+
+    store.getState().undo();
+
+    expect(store.getState().document!.pages[0].edits).toEqual([]);
+    expect(store.getState().document!.pages[0].ocrLines).toEqual([line]);
+    expect(store.getState().history).toHaveLength(0);
+  });
+
+  it('undo is a no-op with no checkpoints', () => {
+    const store = makeStore();
+    store.getState().loadDocument(makeDocument());
+    expect(() => store.getState().undo()).not.toThrow();
+    expect(store.getState().document).not.toBeNull();
+  });
+
+  it('checkpoint is a no-op before a document is loaded', () => {
+    const store = makeStore();
+    store.getState().checkpoint();
+    expect(store.getState().history).toHaveLength(0);
+  });
+
+  it('loadDocument clears history from a previous document', () => {
+    const store = makeStore();
+    store.getState().loadDocument(makeDocument());
+    store.getState().checkpoint();
+    store.getState().loadDocument(makeDocument());
+    expect(store.getState().history).toHaveLength(0);
+  });
+
+  it('history is capped and drops the oldest checkpoints', () => {
+    const store = makeStore();
+    store.getState().loadDocument(makeDocument());
+    for (let i = 0; i < 40; i++) {
+      store.getState().checkpoint();
+      store.getState().addTextEdit(0, {
+        xPt: i,
+        yPt: 0,
+        fontSizePt: 12,
+        text: String(i),
+        color: '#000',
+        fontFamily: 'NotoSansDevanagari',
+      });
+    }
+    expect(store.getState().history.length).toBeLessThanOrEqual(25);
+    // Undoing everything available lands on a state that still has the oldest edits.
+    while (store.getState().history.length > 0) store.getState().undo();
+    expect(store.getState().document!.pages[0].edits.length).toBeGreaterThan(0);
+  });
+
   it('two store instances from createEditStore() are fully independent', () => {
     const storeA = makeStore();
     const storeB = makeStore();

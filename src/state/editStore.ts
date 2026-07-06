@@ -108,6 +108,22 @@ type MaskEditFields = Omit<MaskEdit, 'id' | 'type' | 'page'>;
 
 export type EditStoreState = {
   document: DocumentState | null;
+  /**
+   * Undo history: snapshots of `document` taken by `checkpoint()`, oldest first, capped at
+   * `HISTORY_LIMIT`. Snapshots are just references - safe because every mutation in this
+   * store replaces objects instead of mutating them. Cleared on load/close since history
+   * from another document is meaningless.
+   */
+  history: DocumentState[];
+  /**
+   * Pushes the current document onto the undo history. Callers invoke this once before each
+   * *user-visible* group of mutations (e.g. a tap-to-replace commits a mask + a text edit +
+   * consumes an OCR line - one checkpoint, so one undo reverts all three), rather than the
+   * store snapshotting every low-level action, which would make undo stop mid-gesture.
+   */
+  checkpoint: () => void;
+  /** Restores the most recent checkpoint, if any. No-op when history is empty. */
+  undo: () => void;
   /** Replaces the whole in-memory document, e.g. after opening a file and rasterizing its pages. */
   loadDocument: (document: DocumentState) => void;
   /** Clears the in-memory document, e.g. before opening a different file. */
@@ -128,6 +144,9 @@ export type EditStoreState = {
    * that page. Throws if `page` is out of range, matching the other page-scoped actions. */
   setOcrLines: (page: number, lines: OcrLine[]) => void;
 };
+
+/** Oldest checkpoints are dropped beyond this - bounds memory on long editing sessions. */
+const HISTORY_LIMIT = 25;
 
 function requirePage(document: DocumentState | null, page: number): PageState {
   const pageState = document?.pages[page];
@@ -155,10 +174,23 @@ function withUpdatedPage(document: DocumentState, page: number, edits: Edit[]): 
 export function createEditStore(generateId: () => string = Crypto.randomUUID) {
   return create<EditStoreState>((set, get) => ({
     document: null,
+    history: [],
 
-    loadDocument: (document) => set({ document }),
+    checkpoint: () => {
+      const { document, history } = get();
+      if (!document) return;
+      set({ history: [...history, document].slice(-HISTORY_LIMIT) });
+    },
 
-    closeDocument: () => set({ document: null }),
+    undo: () => {
+      const { history } = get();
+      if (history.length === 0) return;
+      set({ document: history[history.length - 1], history: history.slice(0, -1) });
+    },
+
+    loadDocument: (document) => set({ document, history: [] }),
+
+    closeDocument: () => set({ document: null, history: [] }),
 
     addTextEdit: (page, edit) => {
       const document = get().document;
